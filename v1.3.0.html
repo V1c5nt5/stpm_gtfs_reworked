@@ -1,0 +1,505 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#8f2018">
+<title>RED Analítica GTFS</title>
+<!-- v1.3.0 -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<link rel="stylesheet" href="assets/css/app.css?v=1.3.0">
+</head>
+<body>
+
+<section id="upload-section" class="launch">
+  <div class="launch-brand">
+    <div class="brand-mark" aria-hidden="true">
+      <svg viewBox="0 0 48 48" role="img">
+        <path d="M10 34 17 14h14l7 20M14 26h20" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+    </div>
+    <div class="brand-copy">
+      <span class="eyebrow">RED Movilidad</span>
+      <h1>Analítica operacional GTFS</h1>
+      <p>Explora recorridos, oferta, paraderos y cambios entre publicaciones desde una sola vista.</p>
+    </div>
+    <div class="launch-points" aria-label="Capacidades">
+      <div><span>01</span><strong>Lectura local</strong><small>El procesamiento principal ocurre en tu navegador.</small></div>
+      <div><span>02</span><strong>Carga flexible</strong><small>GTFS es la base; DECO y Parámetros son complementarios.</small></div>
+      <div><span>03</span><strong>Análisis reproducible</strong><small>Las métricas se calculan directamente desde los archivos seleccionados.</small></div>
+    </div>
+  </div>
+
+  <div class="launch-panel">
+    <div class="launch-panel-head">
+      <span class="step-label">Preparar sesión</span>
+      <h2>Selecciona una publicación</h2>
+      <p>Se vincularán automáticamente los datos disponibles dentro de una diferencia máxima de 6 días.</p>
+    </div>
+
+    <div class="launch-form" id="dropzone">
+      <div class="fg">
+        <label for="dataset-date-select">Fecha de referencia</label>
+        <select id="dataset-date-select" onchange="updateStartDatasetAvailability()">
+          <option value="">Buscando publicaciones disponibles…</option>
+        </select>
+      </div>
+
+      <div class="dataset-availability" id="dataset-availability" aria-live="polite">
+        <div class="availability-empty">Selecciona una fecha para revisar la disponibilidad.</div>
+      </div>
+
+      <div class="dataset-link-note" id="dataset-link-note">
+        GTFS es el único dato obligatorio para iniciar.
+      </div>
+
+      <button class="primary-action" id="btn-load-dataset" type="button" onclick="loadSelectedMainGTFS()" disabled>
+        Cargar datos disponibles
+        <span aria-hidden="true">→</span>
+      </button>
+
+      <div class="progress-block">
+        <div class="progress-bar" id="prog-bar" style="display:none"><div class="progress-fill" id="prog-fill"></div></div>
+        <div class="progress-label" id="prog-label" aria-live="polite"></div>
+      </div>
+    </div>
+
+    <p class="source-note">Fuente: repositorio GitHub <code>V1c5nt5/stpm_gtfs</code>.</p>
+  </div>
+</section>
+
+<div id="app" class="app-shell">
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-brand">
+      <div class="brand-mark compact" aria-hidden="true">
+        <svg viewBox="0 0 48 48">
+          <path d="M10 34 17 14h14l7 20M14 26h20" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </div>
+      <div><strong>RED Analítica</strong><small>GTFS Viewer</small></div>
+    </div>
+
+    <nav class="side-nav" aria-label="Secciones">
+      <button class="tab-btn active" data-tab="resumen" onclick="switchTab('resumen')">
+        <span class="nav-icon" aria-hidden="true">⌂</span><span>Resumen</span>
+      </button>
+      <button class="tab-btn" data-tab="ruta" onclick="switchTab('ruta')">
+        <span class="nav-icon" aria-hidden="true">↝</span><span>Recorridos</span>
+      </button>
+      <button class="tab-btn" data-tab="paradero" onclick="switchTab('paradero')">
+        <span class="nav-icon" aria-hidden="true">●</span><span>Paraderos</span>
+      </button>
+      <button class="tab-btn" data-tab="parametros" onclick="switchTab('parametros')">
+        <span class="nav-icon" aria-hidden="true">≡</span><span>Parámetros</span>
+      </button>
+      <button class="tab-btn" data-tab="simulacion" onclick="switchTab('simulacion')">
+        <span class="nav-icon" aria-hidden="true">▶</span><span>Simulación</span>
+      </button>
+      <button class="tab-btn" data-tab="comparar" onclick="switchTab('comparar')">
+        <span class="nav-icon" aria-hidden="true">⇄</span><span>Comparación</span>
+      </button>
+    </nav>
+
+    <div class="sidebar-data">
+      <span class="sidebar-label">Sesión actual</span>
+      <div id="sidebar-source-summary">Datos no cargados</div>
+    </div>
+    <div class="sidebar-version">v1.3.0</div>
+  </aside>
+
+  <main class="workspace">
+    <header class="workspace-header">
+      <button class="menu-toggle" type="button" onclick="toggleSidebar()" aria-label="Abrir navegación">☰</button>
+      <div class="page-identity">
+        <span class="eyebrow" id="page-eyebrow">Vista general</span>
+        <h1 id="page-title">Resumen de la publicación</h1>
+      </div>
+      <div class="workspace-actions">
+        <div class="data-age" id="data-age"></div>
+        <button id="btn-reload" class="secondary-action" style="display:none" onclick="location.reload()">Cambiar datos</button>
+      </div>
+    </header>
+
+    <div class="workspace-body">
+      <!-- RESUMEN -->
+      <section id="tab-resumen" class="page-panel">
+        <div class="section-intro">
+          <div>
+            <span class="section-kicker">Estado del conjunto</span>
+            <h2>Lectura operacional de la publicación</h2>
+            <p>Indicadores calculados desde el GTFS cargado. Las estimaciones de oferta expanden las ventanas de <code>frequencies.txt</code> cuando están disponibles.</p>
+          </div>
+        </div>
+
+        <div class="stats-row" id="stats-row"></div>
+
+        <div class="dashboard-grid">
+          <article class="card span-2">
+            <div class="card-head">
+              <div>
+                <span class="card-kicker">Oferta estimada</span>
+                <h3>Recorridos con más salidas</h3>
+              </div>
+              <button class="text-action" type="button" onclick="switchTab('ruta')">Abrir recorridos →</button>
+            </div>
+            <div class="chart-wrap chart-lg"><canvas id="overview-chart"></canvas></div>
+          </article>
+
+          <article class="card">
+            <div class="card-head">
+              <div>
+                <span class="card-kicker">Calidad</span>
+                <h3>Cobertura de datos</h3>
+              </div>
+            </div>
+            <div id="overview-health" class="health-list"></div>
+          </article>
+
+          <article class="card">
+            <div class="card-head">
+              <div>
+                <span class="card-kicker">Fuentes</span>
+                <h3>Disponibilidad de la sesión</h3>
+              </div>
+            </div>
+            <div id="overview-sources" class="source-list"></div>
+          </article>
+
+          <article class="card span-2">
+            <div class="card-head">
+              <div>
+                <span class="card-kicker">Diagnóstico</span>
+                <h3>Indicadores de estructura</h3>
+              </div>
+            </div>
+            <div id="overview-diagnostics" class="diagnostic-grid"></div>
+          </article>
+        </div>
+      </section>
+
+      <!-- RECORRIDOS -->
+      <section id="tab-ruta" class="page-panel" style="display:none">
+        <div class="filter-bar">
+          <div class="fg">
+            <label for="sel-operator">Operador</label>
+            <select id="sel-operator"></select>
+          </div>
+          <div class="fg grow">
+            <label for="sel-route">Recorrido</label>
+            <select id="sel-route"></select>
+          </div>
+          <div class="fg">
+            <label for="sel-service">Tipo de día</label>
+            <select id="sel-service"></select>
+          </div>
+        </div>
+
+        <div class="context-header">
+          <div>
+            <span class="section-kicker">Recorrido seleccionado</span>
+            <h2 id="route-context-name">—</h2>
+            <p id="route-context-meta">Selecciona un recorrido para analizar su operación.</p>
+          </div>
+          <div class="segmented-control map-dir-tabs" aria-label="Sentido del mapa">
+            <button class="map-dir-btn active" id="map-btn-0" onclick="setMapDir(0)">Ida</button>
+            <button class="map-dir-btn" id="map-btn-1" onclick="setMapDir(1)">Regreso</button>
+            <button class="map-dir-btn" id="map-btn-both" onclick="setMapDir(-1)">Ambos</button>
+          </div>
+        </div>
+
+        <div class="metric-strip" id="route-kpis"></div>
+
+        <article class="card map-card">
+          <div class="card-head">
+            <div>
+              <span class="card-kicker">Geometría y secuencia</span>
+              <h3>Mapa del recorrido</h3>
+            </div>
+            <div class="map-actions">
+              <span id="map-stop-count" class="map-count"></span>
+              <button class="icon-action" type="button" onclick="fitRouteMap()" title="Ajustar mapa al recorrido">⌖ Ajustar</button>
+            </div>
+          </div>
+          <div class="map-stage">
+            <div id="map"></div>
+            <div class="map-legend floating">
+              <span><i class="legend-line ida"></i> Ida</span>
+              <span><i class="legend-line regreso"></i> Regreso</span>
+              <span><i class="legend-dot inicio"></i> Inicio</span>
+              <span><i class="legend-dot fin"></i> Fin</span>
+            </div>
+          </div>
+        </article>
+
+        <div class="content-grid two-thirds">
+          <article class="card">
+            <div class="card-head">
+              <div>
+                <span class="card-kicker">Intervalos operacionales</span>
+                <h3>Oferta por franja</h3>
+              </div>
+            </div>
+            <div id="freq-table-wrap"></div>
+          </article>
+          <article class="card">
+            <div class="card-head">
+              <div>
+                <span class="card-kicker">Distribución horaria</span>
+                <h3>Salidas por hora</h3>
+              </div>
+            </div>
+            <div class="chart-wrap"><canvas id="freq-chart"></canvas></div>
+          </article>
+        </div>
+
+        <article class="card">
+          <div class="card-head departures-head">
+            <div>
+              <span class="card-kicker">Programación expandida</span>
+              <h3>Detalle de salidas</h3>
+              <p id="departures-summary">Salidas del sentido seleccionado.</p>
+            </div>
+            <div class="segmented-control map-dir-tabs">
+              <button class="map-dir-btn active" id="stops-btn-0" onclick="setStopsDir(0)">Ida</button>
+              <button class="map-dir-btn" id="stops-btn-1" onclick="setStopsDir(1)">Regreso</button>
+            </div>
+          </div>
+          <div id="stops-table-wrap"></div>
+        </article>
+      </section>
+
+      <!-- PARADEROS -->
+      <section id="tab-paradero" class="page-panel" style="display:none">
+        <div class="filter-bar">
+          <div class="fg">
+            <label for="sel-operator-stop">Operador</label>
+            <select id="sel-operator-stop"></select>
+          </div>
+          <div class="fg">
+            <label for="sel-service-stop">Tipo de día</label>
+            <select id="sel-service-stop"></select>
+          </div>
+          <div class="fg grow">
+            <label for="stop-search">Buscar paradero</label>
+            <div class="search-wrap">
+              <span class="search-icon" aria-hidden="true">⌕</span>
+              <input type="text" id="stop-search" placeholder="Nombre o código, por ejemplo PD1641" autocomplete="off">
+              <div class="suggestions" id="suggestions" style="display:none"></div>
+            </div>
+          </div>
+        </div>
+
+        <div id="stop-detail" style="display:none">
+          <div class="stop-header" id="stop-header-info"></div>
+          <div class="metric-strip" id="stop-kpis"></div>
+
+          <div class="content-grid stop-layout">
+            <article class="card map-card">
+              <div class="card-head">
+                <div><span class="card-kicker">Ubicación</span><h3>Entorno del paradero</h3></div>
+              </div>
+              <div id="stop-map"></div>
+            </article>
+            <article class="card">
+              <div class="card-head">
+                <div><span class="card-kicker">Servicios</span><h3>Recorridos que atienden</h3></div>
+              </div>
+              <div id="routes-at-stop-wrap"></div>
+            </article>
+          </div>
+
+          <article class="card">
+            <div class="card-head">
+              <div><span class="card-kicker">Demanda programada</span><h3>Llegadas por hora</h3></div>
+            </div>
+            <div class="chart-wrap"><canvas id="stop-chart"></canvas></div>
+          </article>
+
+          <article class="card">
+            <div class="card-head arrivals-head">
+              <div>
+                <span class="card-kicker">Detalle horario</span>
+                <h3 id="arrivals-title">Llegadas</h3>
+              </div>
+              <div class="hour-filter compact-filter">
+                <label for="hour-slider">Hora</label>
+                <input type="range" id="hour-slider" min="0" max="23" value="8" step="1" oninput="onHourSlide(this.value)">
+                <div class="hour-val" id="hour-val">08:00</div>
+              </div>
+            </div>
+            <div id="arrivals-wrap"></div>
+          </article>
+        </div>
+
+        <div id="stop-hint" class="empty-state">
+          <span class="empty-icon">●</span>
+          <h2>Busca un paradero</h2>
+          <p>Consulta recorridos, oferta horaria, ubicación y próximas llegadas programadas.</p>
+        </div>
+      </section>
+
+      <!-- PARÁMETROS -->
+      <section id="tab-parametros" class="page-panel" style="display:none">
+        <article class="card">
+          <div class="card-head">
+            <div><span class="card-kicker">Fuente complementaria</span><h3>Consolidado de parámetros</h3></div>
+          </div>
+          <div class="filter-bar embedded">
+            <div class="fg grow">
+              <label for="param-file-select">Archivo</label>
+              <select id="param-file-select" onchange="syncParamSelects('tab')"><option value="">Buscando consolidado…</option></select>
+            </div>
+            <div class="fg grow">
+              <label for="param-sheet-select">Indicador y período</label>
+              <select id="param-sheet-select"><option value="">Carga el consolidado</option></select>
+            </div>
+            <div class="button-group">
+              <button class="primary-action compact-action" type="button" onclick="loadSelectedParams()">Cargar</button>
+              <button class="secondary-action" type="button" onclick="syncParamRouteFromGTFS()">Usar recorrido actual</button>
+            </div>
+          </div>
+          <div class="status-line" id="param-status">Carga el consolidado vinculado a la publicación.</div>
+        </article>
+
+        <div id="param-panel" style="display:none">
+          <div class="filter-bar">
+            <div class="fg"><label>Unidad de negocio</label><select id="param-operator"></select></div>
+            <div class="fg"><label>Sentido</label><select id="param-sentido"></select></div>
+            <div class="fg"><label>Tipo</label><select id="param-tipo"></select></div>
+            <div class="fg grow"><label>Buscar servicio</label><input type="text" id="param-route-search" placeholder="Código usuario o TS" autocomplete="off"></div>
+          </div>
+          <div class="metric-strip" id="param-summary"></div>
+          <article class="card">
+            <div class="card-head">
+              <div><span class="card-kicker">Detalle tabular</span><h3 id="param-table-title">Detalle</h3></div>
+            </div>
+            <div class="table-note" id="param-sheet-note"></div>
+            <div id="param-table-wrap"></div>
+          </article>
+        </div>
+      </section>
+
+      <!-- SIMULACIÓN -->
+      <section id="tab-simulacion" class="page-panel" style="display:none">
+        <div class="filter-bar">
+          <div class="fg"><label>Operador</label><select id="sim-operator"></select></div>
+          <div class="fg grow"><label>Recorrido</label><select id="sim-route"></select></div>
+          <div class="fg"><label>Tipo de día</label><select id="sim-service"></select></div>
+          <div class="fg">
+            <label>Sentido</label>
+            <select id="sim-dir">
+              <option value="-1">Ida y regreso</option>
+              <option value="0">Ida</option>
+              <option value="1">Regreso</option>
+            </select>
+          </div>
+        </div>
+
+        <article class="card simulation-card">
+          <div class="simulation-toolbar">
+            <div>
+              <span class="card-kicker">Reloj operacional</span>
+              <div class="simulation-time" id="sim-time-label">08:00</div>
+            </div>
+            <div class="time-control">
+              <button class="icon-action" type="button" onclick="stepSimTime(-10)">−10 min</button>
+              <input type="range" id="sim-time-slider" min="0" max="1439" value="480" step="1" oninput="onSimTimeSlide(this.value)">
+              <button class="icon-action" type="button" onclick="stepSimTime(10)">+10 min</button>
+            </div>
+            <button class="primary-action compact-action" id="sim-auto-btn" type="button" onclick="toggleSimAuto()" aria-pressed="false">▶ Reproducir</button>
+          </div>
+          <div class="map-stage simulation-stage">
+            <div id="sim-map"></div>
+            <div class="simulation-status">
+              <strong id="sim-count">0 buses activos</strong>
+              <span>Avance: 10 min cada 2 s</span>
+            </div>
+            <div class="map-legend floating">
+              <span><i class="legend-line ida"></i> Ida</span>
+              <span><i class="legend-line regreso"></i> Regreso</span>
+              <span><i class="legend-dot bus"></i> Vehículo estimado</span>
+            </div>
+          </div>
+          <p class="table-note">La posición se estima interpolando el trazado GTFS entre la salida y la llegada. No representa GPS en tiempo real.</p>
+        </article>
+
+        <article class="card">
+          <div class="card-head">
+            <div><span class="card-kicker">Estado del servicio</span><h3>Viajes activos</h3></div>
+          </div>
+          <div id="sim-active-wrap"></div>
+        </article>
+      </section>
+
+      <!-- COMPARACIÓN -->
+      <section id="tab-comparar" class="page-panel" style="display:none">
+        <article class="card compare-selector">
+          <div class="card-head">
+            <div><span class="card-kicker">Evolución de publicaciones</span><h3>Selecciona los GTFS a comparar</h3></div>
+          </div>
+          <div class="filter-bar embedded">
+            <div class="fg grow"><label>Publicación base</label><select id="compare-base-select"><option value="">Buscando archivos…</option></select></div>
+            <div class="compare-arrow" aria-hidden="true">→</div>
+            <div class="fg grow"><label>Publicación objetivo</label><select id="compare-target-select"><option value="">Buscando archivos…</option></select></div>
+            <button class="primary-action compact-action" type="button" onclick="compareSelectedGTFS()">Comparar</button>
+          </div>
+          <div id="compare-hint" class="status-line">Selecciona dos publicaciones para calcular sus diferencias.</div>
+        </article>
+
+        <div id="compare-results" style="display:none">
+          <div class="compare-summary" id="compare-summary"></div>
+
+          <div class="filter-bar analysis-bar">
+            <div class="fg grow"><label>Buscar recorrido modificado</label><input type="text" id="compare-route-search" placeholder="Ej. 101, B12 o F10" autocomplete="off" oninput="renderCompareAnalysis()"></div>
+            <div class="fg">
+              <label>Tipo de cambio</label>
+              <select id="compare-change-filter" onchange="renderCompareAnalysis()">
+                <option value="all">Todos</option>
+                <option value="stops">Trazado / paraderos</option>
+                <option value="frequency">Frecuencia</option>
+                <option value="trips">Viajes / oferta</option>
+                <option value="service">Días / sentidos</option>
+                <option value="metadata">Metadatos</option>
+              </select>
+            </div>
+            <div class="fg">
+              <label>Orden</label>
+              <select id="compare-sort" onchange="renderCompareAnalysis()">
+                <option value="impact">Mayor impacto</option>
+                <option value="frequency">Mayor cambio de frecuencia</option>
+                <option value="trips">Mayor cambio de viajes</option>
+                <option value="route">Código de recorrido</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="table-note" id="compare-analysis-note"></div>
+
+          <div class="content-grid">
+            <article class="card"><div class="card-head"><div><span class="card-kicker">Altas</span><h3>Recorridos creados</h3></div></div><div id="routes-created-wrap" class="compare-list"></div></article>
+            <article class="card"><div class="card-head"><div><span class="card-kicker">Bajas</span><h3>Recorridos eliminados</h3></div></div><div id="routes-deleted-wrap" class="compare-list"></div></article>
+          </div>
+          <div class="content-grid">
+            <article class="card"><div class="card-head"><div><span class="card-kicker">Análisis multivariable</span><h3>Recorridos modificados</h3></div></div><div id="routes-modified-wrap" class="compare-list"></div></article>
+            <article class="card"><div class="card-head"><div><span class="card-kicker">Oferta</span><h3>Mayores cambios de frecuencia</h3></div></div><div id="freq-changes-wrap" class="compare-list"></div></article>
+          </div>
+          <div class="content-grid">
+            <article class="card"><div class="card-head"><div><span class="card-kicker">Infraestructura</span><h3>Paraderos nuevos</h3><p>Solo códigos PA–PJ con 1 a 4 dígitos.</p></div></div><div id="stops-created-wrap" class="compare-list"></div></article>
+            <article class="card"><div class="card-head"><div><span class="card-kicker">Infraestructura</span><h3>Paraderos eliminados</h3><p>Solo códigos PA–PJ con 1 a 4 dígitos.</p></div></div><div id="stops-deleted-wrap" class="compare-list"></div></article>
+          </div>
+        </div>
+      </section>
+    </div>
+  </main>
+</div>
+
+<footer class="site-version" aria-label="Versión de la aplicación">Versión v1.3.0</footer>
+<div class="sidebar-backdrop" id="sidebar-backdrop" onclick="toggleSidebar(false)"></div>
+
+<script src="assets/js/app.js?v=1.3.0"></script>
+</body>
+</html>

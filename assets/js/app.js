@@ -1,218 +1,2285 @@
-/* STPM GTFS Map App v3.1.0 — mapa primero, datos remotos desde GitHub */
-var GITHUB_OWNER='V1c5nt5', GITHUB_REPO='stpm_gtfs', GITHUB_BRANCH='main';
-var GITHUB_DATA_PATH='data';
-var GITHUB_DATA_API='https://api.github.com/repos/'+GITHUB_OWNER+'/'+GITHUB_REPO+'/contents/'+GITHUB_DATA_PATH+'?ref='+GITHUB_BRANCH;
-var GITHUB_RAW_BASE='https://raw.githubusercontent.com/'+GITHUB_OWNER+'/'+GITHUB_REPO+'/'+GITHUB_BRANCH+'/'+GITHUB_DATA_PATH+'/';
-var GTFS_FILES=[], DECO_FILES=[], MANUAL_GTFS_FILE=null, MANUAL_DECO_FILE=null;
-var DATA=null, map=null, baseLayer=null, trafficLayer=null;
-var allStopsLayer=null, routeStopsLayer=null, routeShapeLayers=[];
-var currentRouteId='', currentService='', currentDir='0', selectedStopId='';
-var stopRenderer=null;
-var SVC={L:'Lunes a viernes',LJ:'Lun a jue',V:'Viernes',S:'Sábado',D:'Domingo',F:'Festivo'};
-var REMOTE_FALLBACKS={
-  gtfs:['GTFS_20260530.zip','GTFS_20260425_v3.zip','GTFS_20260314.zip','GTFS PO06dic+2vuelta.zip'],
-  deco:['DECO_VIGENTES_20260529.zip','DECO_VIGENTES_20260420 (1).zip']
+/* v1.3.0 — lógica principal de RED Analítica GTFS
+   Separado desde el HTML para facilitar mantenimiento en GitHub Pages. */
+
+var SVC = {L:'Lunes a Viernes', S:'Sábado', D:'Domingo', F:'Festivo', LJ:'Lun a Jue', V:'Viernes'};
+var DAY_NAMES = ['Lunes','Martes','Miércoles','Jueves','Viernes','Sábado','Domingo'];
+var DATA = freshData();
+var GITHUB_OWNER = 'V1c5nt5';
+var GITHUB_REPO = 'stpm_gtfs';
+var GITHUB_BRANCH = 'main';
+var GITHUB_DATA_API = 'https://api.github.com/repos/'+GITHUB_OWNER+'/'+GITHUB_REPO+'/contents/data?ref='+GITHUB_BRANCH;
+var GITHUB_GTFS_FILES = [];
+var GITHUB_DECO_FILES = [];
+var GITHUB_PARAM_FILES = [];
+var START_DATASET = null;
+var DATASET_MAX_GAP_DAYS = 6;
+var MANUAL_GTFS_FILE = null, MANUAL_DECO_FILE = null;
+function freshData(){
+  return {
+    agency:{}, routes:{}, trips:{}, frequencies:[], frequenciesByTrip:{}, stopTimes:{}, stops:{}, stopIndex:{}, stopTrips:{}, shapes:{},
+    calendar:{}, calendarDates:[], feedInfo:null, levels:{}, pathways:[], pathwaysByStop:{}, serviceIds:[], tripsByRoute:{}, tripsByService:{}, tripsByStop:{},
+    decoRows:[], decoByRoute:{}, operators:[], sourceNames:{gtfs:'',deco:'',param:''}, sourceDates:{gtfs:null,deco:null,param:null},
+    availableSources:{gtfs:false,deco:false,param:false}, decoCompatible:false, decoDateGapDays:null, analytics:null
+  };
+}
+var freqChart = null, stopChart = null, overviewChart = null;
+var leafMap = null, layerIda = null, layerReg = null, layerStops = null, routeMapBounds = null;
+var simMap = null, simShapeLayer = null, simVehicleLayer = null, simShapeKey = '';
+var simSelectedMinute = 480;
+var simAutoTimer = null;
+var stopLeafMap = null, stopMarker = null;
+var activeStop = null, selectedHour = 8;
+var curMapDir = 0, curStopsDir = 0;
+var _cachedArrivals = [];
+var PARAMS = {
+  file:null, zip:null, sheets:[], sharedStrings:null, cache:{}, activeSheet:null, rows:[], intervals:[], metric:'', sourceDate:null, loading:false
 };
-function rawDataUrl(name){return GITHUB_RAW_BASE+encodeURIComponent(name).replace(/%2F/g,'/')}
-function $(id){return document.getElementById(id)}
-function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
-function norm(s){return String(s||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().trim()}
-function unique(a){return Array.from(new Set((a||[]).filter(function(x){return x!==undefined&&x!==null&&x!==''}))) }
-function timeSecs(t){var p=String(t||'0:0:0').split(':');return (+p[0]||0)*3600+(+p[1]||0)*60+(+p[2]||0)}
-function timeShort(t){var p=String(t||'').split(':');return (p[0]||'00').padStart(2,'0')+':'+(p[1]||'00').padStart(2,'0')}
-function cleanName(n){return String(n||'').replace(/^[A-Z0-9]+-/,'').trim()}
-function routeName(r){return r?(r.route_short_name||r.route_id||'Ruta'):''}
-function routeLong(r){return r?(r.route_long_name||r.route_desc||''):''}
-function routeColor(r){var c=String((r&&r.route_color)||'2563eb').replace('#','');return '#'+(c||'2563eb')}
-function textColor(r){var c=String((r&&r.route_text_color)||'ffffff').replace('#','');return '#'+(c||'ffffff')}
-function serviceLabel(s){return SVC[s]||s||'Servicio'}
-function progress(p,t){$('progress-fill').style.width=Math.max(0,Math.min(100,p||0))+'%';$('progress-label').textContent=t||''}
-function setOptions(sel, rows, getValue, getText, placeholder){sel.innerHTML=''; if(placeholder){var o=document.createElement('option');o.value='';o.textContent=placeholder;sel.appendChild(o)} rows.forEach(function(row){var o=document.createElement('option');o.value=getValue(row);o.textContent=getText(row);sel.appendChild(o)})}
-async function initGithub(){
-  var fallbackGtfs=REMOTE_FALLBACKS.gtfs.map(function(n){return {name:n,url:rawDataUrl(n)}});
-  var fallbackDeco=REMOTE_FALLBACKS.deco.map(function(n){return {name:n,url:rawDataUrl(n)}});
+
+
+var dropzone = document.getElementById('dropzone');
+var fileInput = document.getElementById('file-input');
+if(dropzone){
+  dropzone.addEventListener('dragover', function(e){ e.preventDefault(); dropzone.classList.add('drag'); });
+  dropzone.addEventListener('dragleave', function(){ dropzone.classList.remove('drag'); });
+}
+if(fileInput) fileInput.addEventListener('change', function(e){ MANUAL_GTFS_FILE=e.target.files[0]||null; updateManualLabel(); });
+var decoFileInput = document.getElementById('deco-file-input');
+if(decoFileInput) decoFileInput.addEventListener('change', function(e){ MANUAL_DECO_FILE=e.target.files[0]||null; updateManualLabel(); });
+
+async function initGitHubGTFSList(){
+  var fallbackGtfs=[
+    {name:'GTFS_20260425_v3.zip', download_url:'https://raw.githubusercontent.com/V1c5nt5/stpm_gtfs/main/data/GTFS_20260425_v3.zip'},
+    {name:'GTFS_20260530.zip', download_url:'https://raw.githubusercontent.com/V1c5nt5/stpm_gtfs/main/data/GTFS_20260530.zip'}
+  ];
+  var fallbackDeco=[
+    {name:'DECO_VIGENTES_20260529.zip', download_url:'https://raw.githubusercontent.com/V1c5nt5/stpm_gtfs/main/data/DECO_VIGENTES_20260529.zip'}
+  ];
+  var fallbackParams=[
+    {name:'15-Consolidado-Parametros-2026-05-30.xlsx', download_url:'https://raw.githubusercontent.com/V1c5nt5/stpm_gtfs/main/data/15-Consolidado-Parametros-2026-05-30.xlsx'}
+  ];
   try{
-    var r=await fetch(GITHUB_DATA_API,{cache:'no-store'}); if(!r.ok) throw new Error('GitHub API '+r.status);
-    var files=await r.json();
-    var entries=files.filter(function(f){return f.type==='file'&&/\.(zip|csv)$/i.test(f.name)}).map(function(f){return {name:f.name,url:f.download_url||rawDataUrl(f.name)}}).sort(function(a,b){return a.name.localeCompare(b.name,undefined,{numeric:true})});
-    GTFS_FILES=entries.filter(function(f){return /gtfs/i.test(f.name)}); DECO_FILES=entries.filter(function(f){return /deco/i.test(f.name)});
-    if(!GTFS_FILES.length) GTFS_FILES=fallbackGtfs; if(!DECO_FILES.length) DECO_FILES=fallbackDeco;
-  }catch(e){ GTFS_FILES=fallbackGtfs; DECO_FILES=fallbackDeco; }
-  setOptions($('github-main-select'),GTFS_FILES,function(f){return f.url},function(f){return f.name});
-  setOptions($('github-deco-select'),DECO_FILES,function(f){return f.url},function(f){return f.name},'Sin DECO');
-  $('github-main-select').selectedIndex=Math.max(0,GTFS_FILES.length-1); $('github-deco-select').selectedIndex=Math.max(0,DECO_FILES.length-1);
-}
-async function fetchFile(url,name){var r=await fetch(url,{cache:'no-store'}); if(!r.ok) throw new Error('No se pudo descargar '+name+' ('+r.status+')'); var b=await r.blob(); try{return new File([b],name,{type:'application/zip'})}catch(e){b.name=name;return b}}
-function loadGtfs(file){
-  return new Promise(function(resolve,reject){
-    var w=new Worker('assets/js/gtfs-worker.js?v=3.1.0');
-    w.onmessage=function(e){var m=e.data||{}; if(m.type==='progress') progress(m.pct,m.text); if(m.type==='done'){w.terminate();resolve(m.data)} if(m.type==='error'){w.terminate();reject(new Error(m.message||'Error GTFS'))}};
-    w.onerror=function(e){w.terminate();reject(new Error(e.message||'Error en worker'))};
-    w.postMessage({file:file});
-  })
-}
-async function parseDeco(file){
-  if(!file) return [];
-  try{
-    var txt='';
-    if(/\.zip$/i.test(file.name||'')){var z=await JSZip.loadAsync(file); var first=z.file(/\.csv$/i)[0]; if(!first) return []; txt=await first.async('string')}
-    else txt=await file.text();
-    return Papa.parse(txt.trim(),{header:true,skipEmptyLines:true,dynamicTyping:false}).data||[];
-  }catch(e){console.warn(e);return []}
-}
-function decoOperator(row){var keys=['UN','Unidad','unidad','operador','Operador','operator','agency_id']; for(var i=0;i<keys.length;i++){if(row&&row[keys[i]])return String(row[keys[i]]).trim()} return 'Sin operador'}
-function inferOperator(route){
-  if(!route) return 'Sin operador';
-  if(route._operator) return route._operator;
-  var key=norm(route.route_short_name||route.route_id);
-  var rows=(DATA.decoRows||[]);
-  for(var i=0;i<rows.length;i++){
-    var r=rows[i], vals=Object.values(r).map(norm);
-    if(vals.indexOf(key)!==-1 || vals.some(function(v){return v===key||v.indexOf(' '+key+' ')>=0})) return route._operator=decoOperator(r);
+    var res=await fetch(GITHUB_DATA_API,{cache:'no-store'});
+    if(!res.ok) throw new Error('GitHub API '+res.status);
+    var files=await res.json();
+    var dataFiles=files.filter(function(f){return f.type==='file' && /\.(zip|csv|xlsx)$/i.test(f.name);})
+      .map(function(f){return {name:f.name, download_url:f.download_url || ('https://raw.githubusercontent.com/'+GITHUB_OWNER+'/'+GITHUB_REPO+'/'+GITHUB_BRANCH+'/data/'+encodeURIComponent(f.name))};})
+      .sort(function(a,b){return a.name.localeCompare(b.name,undefined,{numeric:true});});
+    var zips=dataFiles.filter(function(f){return /\.(zip|csv)$/i.test(f.name);});
+    GITHUB_GTFS_FILES=zips.filter(function(f){return /gtfs/i.test(f.name);});
+    GITHUB_DECO_FILES=zips.filter(function(f){return /deco/i.test(f.name);});
+    GITHUB_PARAM_FILES=dataFiles.filter(function(f){return /consolidado.*param/i.test(f.name) && /\.xlsx$/i.test(f.name);});
+    if(!GITHUB_GTFS_FILES.length) GITHUB_GTFS_FILES=fallbackGtfs;
+    if(!GITHUB_DECO_FILES.length) GITHUB_DECO_FILES=fallbackDeco;
+    if(!GITHUB_PARAM_FILES.length) GITHUB_PARAM_FILES=fallbackParams;
+  }catch(err){
+    console.warn('No se pudo leer /data desde GitHub. Se usará lista base.',err);
+    GITHUB_GTFS_FILES=fallbackGtfs;
+    GITHUB_DECO_FILES=fallbackDeco;
+    GITHUB_PARAM_FILES=fallbackParams;
   }
-  return route._operator=(route.agency_id||'Sin operador');
+  fillGitHubSelects();
 }
-async function bootWithFiles(gtfsFile,decoFile){
+function fillOneSelect(id, files, placeholder, selectedIndex){
+  var sel=document.getElementById(id); if(!sel) return;
+  sel.innerHTML='';
+  if(!files.length){
+    var empty=document.createElement('option');
+    empty.value='';
+    empty.textContent=placeholder;
+    sel.appendChild(empty);
+    return;
+  }
+  files.forEach(function(f,i){
+    var o=document.createElement('option');
+    o.value=f.download_url;
+    o.textContent=f.name;
+    o.dataset.name=f.name;
+    sel.appendChild(o);
+    if(i===selectedIndex) o.selected=true;
+  });
+}
+function dateKey(dt){
+  if(!dt) return '';
+  return String(dt.getFullYear())+'-'+String(dt.getMonth()+1).padStart(2,'0')+'-'+String(dt.getDate()).padStart(2,'0');
+}
+function dateFromKey(key){
+  var m=String(key||'').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if(!m) return null;
+  var dt=new Date(Number(m[1]),Number(m[2])-1,Number(m[3]));
+  return isNaN(dt.getTime()) ? null : dt;
+}
+function formatDatasetDate(dt){
+  if(!dt) return 'Fecha no detectada';
   try{
-    progress(5,'Preparando carga...');
-    var parsed=await loadGtfs(gtfsFile); parsed.decoRows=await parseDeco(decoFile); DATA=parsed;
-    DATA.routesList=Object.values(DATA.routes).sort(function(a,b){return routeName(a).localeCompare(routeName(b),undefined,{numeric:true})});
-    DATA.operators=unique(DATA.routesList.map(inferOperator)).sort(function(a,b){return a.localeCompare(b,undefined,{numeric:true})});
-    progress(100,'Datos cargados.');
-    startApp();
-  }catch(e){alert(e.message||String(e)); progress(0,'Error de carga.')}
+    return new Intl.DateTimeFormat('es-CL',{day:'numeric',month:'long',year:'numeric'}).format(dt);
+  }catch(e){
+    return String(dt.getDate()).padStart(2,'0')+'-'+String(dt.getMonth()+1).padStart(2,'0')+'-'+dt.getFullYear();
+  }
 }
-async function loadGithub(){
-  var s=$('github-main-select'), d=$('github-deco-select'); if(!s.value){alert('Selecciona un GTFS.');return}
-  try{progress(4,'Descargando desde GitHub/data...'); var gtfs=await fetchFile(s.value,s.options[s.selectedIndex].textContent||'gtfs.zip'); var deco=d.value?await fetchFile(d.value,d.options[d.selectedIndex].textContent||'deco.zip'):null; await bootWithFiles(gtfs,deco)}catch(e){alert(e.message||String(e));progress(0,'Error de descarga.')}
+function fileWithDate(file){
+  if(!file) return null;
+  var dt=extractDateFromName(file.name);
+  return dt ? {file:file,date:dt,key:dateKey(dt)} : null;
 }
-function updateManualLabel(){var a=MANUAL_GTFS_FILE?MANUAL_GTFS_FILE.name:'sin GTFS', b=MANUAL_DECO_FILE?MANUAL_DECO_FILE.name:'sin DECO'; $('manual-label').textContent='Manual: '+a+' / '+b}
-function loadManual(){if(!MANUAL_GTFS_FILE){alert('Selecciona un GTFS manual.');return} bootWithFiles(MANUAL_GTFS_FILE,MANUAL_DECO_FILE)}
-function startApp(){
-  $('loader').classList.add('hidden'); $('app').classList.remove('hidden'); initMap(); fillControls(); renderStats(); bindAppEvents(); setTimeout(function(){map.invalidateSize(); fitAllStops()},80)
+function datedFiles(files){
+  return (files||[]).map(fileWithDate).filter(Boolean);
 }
-function initMap(){
-  if(map) return;
-  stopRenderer=L.canvas({padding:.4});
-  map=L.map('map',{preferCanvas:true,zoomControl:true}).setView([-33.45,-70.66],11);
-  baseLayer=L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'&copy; OpenStreetMap'}).addTo(map);
-  allStopsLayer=L.layerGroup().addTo(map); routeStopsLayer=L.layerGroup().addTo(map);
-  map.on('moveend zoomend',function(){ if($('toggle-stops').checked) renderVisibleStops() });
+function newestNamedFile(items){
+  return items.slice().sort(function(a,b){
+    return String(a.file.name).localeCompare(String(b.file.name),undefined,{numeric:true});
+  }).pop() || null;
 }
-function fitAllStops(){
-  var pts=Object.values(DATA.stops).filter(function(s){return isFinite(s.stop_lat)&&isFinite(s.stop_lon)}).slice(0,20000).map(function(s){return [s.stop_lat,s.stop_lon]});
-  if(pts.length) map.fitBounds(L.latLngBounds(pts),{padding:[30,30],maxZoom:12}); renderVisibleStops();
+function linkedDatasetForDate(targetDate){
+  var targetKey=dateKey(targetDate);
+  var gtfsExact=datedFiles(GITHUB_GTFS_FILES).filter(function(item){return item.key===targetKey;});
+  var gtfsItem=newestNamedFile(gtfsExact);
+  if(!gtfsItem) return {date:targetDate,gtfs:null,deco:null,param:null,complete:false,availableCount:0};
+
+  function nearestWithinWindow(files){
+    return datedFiles(files).filter(function(item){
+      return dateGapDays(targetDate,item.date)<=DATASET_MAX_GAP_DAYS;
+    }).sort(function(a,b){
+      return dateGapDays(targetDate,a.date)-dateGapDays(targetDate,b.date) ||
+        String(b.file.name).localeCompare(String(a.file.name),undefined,{numeric:true});
+    })[0] || null;
+  }
+
+  var decoItem=nearestWithinWindow(GITHUB_DECO_FILES);
+  var paramItem=nearestWithinWindow(GITHUB_PARAM_FILES);
+  return {
+    date:targetDate,
+    gtfs:gtfsItem,
+    deco:decoItem,
+    param:paramItem,
+    complete:!!(decoItem && paramItem),
+    availableCount:1+(decoItem?1:0)+(paramItem?1:0)
+  };
 }
-function renderVisibleStops(){
-  if(!DATA||!map||!allStopsLayer) return; allStopsLayer.clearLayers(); if(!$('toggle-stops').checked) return;
-  var b=map.getBounds(), z=map.getZoom(), max=z<12?450:z<14?1200:3500, count=0;
-  Object.values(DATA.stops).some(function(s){
-    if(!isFinite(s.stop_lat)||!isFinite(s.stop_lon)) return false;
-    var ll=L.latLng(+s.stop_lat,+s.stop_lon); if(!b.contains(ll)) return false;
-    count++; if(count>max) return true;
-    L.circleMarker(ll,{renderer:stopRenderer,radius:z>=15?4:3,weight:1,color:'#1d4ed8',fillColor:'#2563eb',fillOpacity:.55}).on('click',function(){selectStop(s.stop_id,true)}).addTo(allStopsLayer);
-    return false;
+function availabilityDetail(item, targetDate){
+  if(!item) return 'No encontrado dentro de 6 días';
+  var gap=dateGapDays(targetDate,item.date);
+  var relation=gap===0 ? 'misma fecha' : (gap===1 ? '1 día de diferencia' : gap+' días de diferencia');
+  return esc(item.file.name)+' · '+relation;
+}
+function availabilityCard(label,item,targetDate){
+  var available=!!item;
+  return '<div class="availability-item '+(available?'available':'missing')+'">'+
+    '<span class="availability-label">'+esc(label)+'</span>'+
+    '<strong>'+(available?'Disponible':'No disponible')+'</strong>'+
+    '<small>'+availabilityDetail(item,targetDate)+'</small>'+
+  '</div>';
+}
+function fillStartDateSelect(){
+  var sel=document.getElementById('dataset-date-select');
+  if(!sel) return;
+  var old=sel.value;
+  var groups={};
+  datedFiles(GITHUB_GTFS_FILES).forEach(function(item){groups[item.key]=item.date;});
+  var keys=Object.keys(groups).sort();
+  sel.innerHTML='';
+  if(!keys.length){
+    var empty=document.createElement('option');
+    empty.value='';
+    empty.textContent='No hay fechas GTFS disponibles';
+    sel.appendChild(empty);
+    START_DATASET=null;
+    updateStartDatasetAvailability();
+    return;
+  }
+  keys.forEach(function(key){
+    var o=document.createElement('option');
+    o.value=key;
+    o.textContent=formatDatasetDate(groups[key]);
+    sel.appendChild(o);
+  });
+  sel.value=keys.indexOf(old)!==-1 ? old : keys[keys.length-1];
+  updateStartDatasetAvailability();
+}
+function updateStartDatasetAvailability(){
+  var sel=document.getElementById('dataset-date-select');
+  var wrap=document.getElementById('dataset-availability');
+  var note=document.getElementById('dataset-link-note');
+  var btn=document.getElementById('btn-load-dataset');
+  var targetDate=sel ? dateFromKey(sel.value) : null;
+  START_DATASET=targetDate ? linkedDatasetForDate(targetDate) : null;
+
+  if(!wrap || !note || !btn) return;
+  if(!START_DATASET || !START_DATASET.gtfs){
+    wrap.innerHTML='<div class="availability-empty">No hay un GTFS con fecha válida para esta selección.</div>';
+    note.textContent='No hay datos base disponibles para cargar.';
+    note.className='dataset-link-note is-warning';
+    btn.disabled=true;
+    return;
+  }
+
+  wrap.innerHTML=
+    availabilityCard('GTFS',START_DATASET.gtfs,targetDate)+
+    availabilityCard('DECO',START_DATASET.deco,targetDate)+
+    availabilityCard('Parámetros',START_DATASET.param,targetDate);
+
+  var missing=[];
+  if(!START_DATASET.deco) missing.push('DECO');
+  if(!START_DATASET.param) missing.push('Parámetros');
+  if(!missing.length){
+    note.textContent='Conjunto completo disponible. Cada fuente está a un máximo de 6 días del GTFS.';
+    note.className='dataset-link-note is-ready';
+  }else{
+    note.textContent='Carga parcial disponible. No se encontró '+missing.join(' ni ')+' dentro de 6 días; se mostrarán solo las pestañas compatibles.';
+    note.className='dataset-link-note is-warning';
+  }
+  btn.disabled=false;
+}
+function fillGitHubSelects(){
+  fillOneSelect('compare-base-select',GITHUB_GTFS_FILES,'Sin GTFS disponibles',0);
+  fillOneSelect('compare-target-select',GITHUB_GTFS_FILES,'Sin GTFS disponibles',Math.max(0,GITHUB_GTFS_FILES.length-1));
+  fillOneSelect('param-file-select',GITHUB_PARAM_FILES,'Sin consolidado disponible',Math.max(0,GITHUB_PARAM_FILES.length-1));
+  fillStartDateSelect();
+}
+function syncParamSelects(source){
+  var tab=document.getElementById('param-file-select');
+  if(!tab) return;
+  if(source==='start'){
+    if(START_DATASET && START_DATASET.param){
+      tab.value=START_DATASET.param.file.download_url;
+      tab.disabled=false;
+    }else{
+      tab.value='';
+      tab.disabled=true;
+    }
+  }
+}
+async function fetchGTFSFileFromURL(url, name){
+  var res=await fetch(url,{cache:'no-store'});
+  if(!res.ok) throw new Error('No se pudo descargar '+name+' ('+res.status+')');
+  var blob=await res.blob();
+  try{ return new File([blob], name, {type:'application/zip'}); }
+  catch(e){ blob.name=name; return blob; }
+}
+async function loadSelectedMainGTFS(){
+  if(!START_DATASET || !START_DATASET.gtfs){
+    alert('No hay un GTFS disponible para la fecha seleccionada.');
+    return;
+  }
+  var gtfs=START_DATASET.gtfs.file;
+  var deco=START_DATASET.deco ? START_DATASET.deco.file : null;
+  var paramItem=START_DATASET.param || null;
+  syncParamSelects('start');
+  prog(3,deco ? 'Descargando GTFS y DECO desde GitHub...' : 'Descargando GTFS desde GitHub...');
+  try{
+    var file=await fetchGTFSFileFromURL(gtfs.download_url,gtfs.name);
+    var decoFile=null;
+    if(deco){
+      try{
+        decoFile=await fetchGTFSFileFromURL(deco.download_url,deco.name);
+      }catch(decoErr){
+        console.warn('No se pudo descargar el DECO vinculado. Se continuará solo con GTFS.',decoErr);
+      }
+    }
+    await handleFile(file,decoFile,paramItem);
+  }
+  catch(err){
+    console.error(err);
+    prog(0,'No se pudo descargar el GTFS seleccionado desde GitHub.');
+  }
+}
+function updateManualLabel(){
+  var el=document.getElementById('manual-files-label'); if(!el) return;
+  var g=MANUAL_GTFS_FILE ? (MANUAL_GTFS_FILE.name||'GTFS seleccionado') : 'GTFS pendiente';
+  var d=MANUAL_DECO_FILE ? (MANUAL_DECO_FILE.name||'DECO seleccionado') : 'DECO pendiente';
+  el.textContent=g+' · '+d;
+}
+async function loadManualPair(){
+  if(!MANUAL_GTFS_FILE){ alert('Debes seleccionar un GTFS antes de cargar.'); return; }
+  await handleFile(MANUAL_GTFS_FILE,MANUAL_DECO_FILE,null);
+}
+
+document.addEventListener('DOMContentLoaded', initGitHubGTFSList);
+
+function prog(pct, txt){
+  document.getElementById('prog-bar').style.display = 'block';
+  document.getElementById('prog-fill').style.width = pct + '%';
+  document.getElementById('prog-label').textContent = txt;
+}
+function csvNum(v, fallback){
+  if(v===undefined||v===null||v==='') return fallback===undefined?0:fallback;
+  var n = Number(v); return isNaN(n) ? (fallback===undefined?0:fallback) : n;
+}
+function timeToSecs(t){
+  if(!t) return 0;
+  var p = String(t).split(':');
+  return csvNum(p[0])*3600 + csvNum(p[1])*60 + csvNum(p[2]);
+}
+function secsToTime(s){
+  if(s===null||s===undefined||isNaN(s)) return '—';
+  var sign=Number(s)<0?'-':'';
+  var value=Math.abs(Number(s));
+  var h=Math.floor(value/3600);
+  var m=Math.floor((value%3600)/60);
+  return sign+String(h).padStart(2,'0')+':'+String(m).padStart(2,'0');
+}
+function cleanName(n){ return (n||'').replace(/^[A-Z0-9]+-/, '').trim(); }
+function freqClass(m){ return m<=12?'fg-good':m<=20?'fg-mid':'fg-low'; }
+function safeHexColor(value, fallback){
+  value = String(value || '').replace('#','').trim();
+  return /^[0-9a-fA-F]{6}$/.test(value) ? '#' + value : fallback;
+}
+function rColor(r){ return safeHexColor(r && r.route_color, '#AF2B1E'); }
+function rText(r){ return safeHexColor(r && r.route_text_color, '#FFFFFF'); }
+function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];}); }
+function unique(arr){ return Array.from(new Set(arr.filter(function(x){return x!==undefined&&x!==null&&x!=='';}))); }
+
+function extractDateFromName(name){
+  var value=String(name||'');
+  var m=value.match(/(20\d{2})[-_]?([01]\d)[-_]?([0-3]\d)/);
+  var y,mo,d;
+  if(m){
+    y=Number(m[1]); mo=Number(m[2])-1; d=Number(m[3]);
+  }else{
+    m=value.match(/([0-3]\d)[-_]([01]\d)[-_](20\d{2})/);
+    if(!m) return null;
+    d=Number(m[1]); mo=Number(m[2])-1; y=Number(m[3]);
+  }
+  var dt=new Date(y,mo,d);
+  if(isNaN(dt.getTime()) || dt.getFullYear()!==y || dt.getMonth()!==mo || dt.getDate()!==d) return null;
+  return dt;
+}
+function daysAgo(dt){
+  if(!dt) return null;
+  var now=new Date(), a=new Date(now.getFullYear(),now.getMonth(),now.getDate()), b=new Date(dt.getFullYear(),dt.getMonth(),dt.getDate());
+  return Math.floor((a-b)/86400000);
+}
+function ageText(label, dt){
+  var d=daysAgo(dt); if(d===null) return label+': fecha no detectada';
+  if(d===0) return label+': datos de hoy';
+  if(d===1) return label+': datos de hace 1 día';
+  return label+': datos de hace '+d+' días';
+}
+function dateGapDays(a, b){
+  if(!a || !b) return null;
+  var aDay=Date.UTC(a.getFullYear(),a.getMonth(),a.getDate());
+  var bDay=Date.UTC(b.getFullYear(),b.getMonth(),b.getDate());
+  return Math.round(Math.abs(aDay-bDay)/86400000);
+}
+function updateDecoCompatibility(){
+  var gap=dateGapDays(DATA.sourceDates.gtfs,DATA.sourceDates.deco);
+  DATA.decoDateGapDays=gap;
+  DATA.decoCompatible=gap!==null && gap<=6;
+}
+function normalizeOpKey(v){ return String(v||'').trim().toLowerCase().replace(/\s+/g,''); }
+function operatorFromDeco(row){ return row ? String(row.CLI_DSC||row.OPERADOR||row.operador||'Operador no informado').trim() : 'Sin DECO'; }
+function routeOperator(route){
+  if(!DATA.decoCompatible) return 'No disponible';
+  if(!route) return 'Sin DECO';
+  var keys=[route.route_short_name, route.route_id].map(normalizeOpKey);
+  for(var i=0;i<keys.length;i++){ if(DATA.decoByRoute[keys[i]]) return operatorFromDeco(DATA.decoByRoute[keys[i]][0]); }
+  return 'Sin DECO';
+}
+function routeMatchesOperator(route, op){
+  if(!DATA.decoCompatible) return true;
+  return !op || op==='__all' || routeOperator(route)===op;
+}
+function fillOperatorSelect(selId, keepValue){
+  var sel=document.getElementById(selId); if(!sel) return;
+  var old=keepValue || sel.value || '__all'; sel.innerHTML='';
+  var all=document.createElement('option'); all.value='__all';
+  if(!DATA.decoCompatible){
+    all.textContent='Sin filtro por operador';
+    sel.appendChild(all);
+    sel.value='__all';
+    sel.disabled=true;
+    sel.title=DATA.availableSources.deco
+      ? 'GTFS y DECO tienen más de 6 días de diferencia o una fecha no detectable.'
+      : 'No hay un DECO vinculado para esta fecha.';
+    return;
+  }
+  all.textContent='Todos los operadores'; sel.appendChild(all);
+  DATA.operators.forEach(function(op){ var o=document.createElement('option'); o.value=op; o.textContent=op; sel.appendChild(o); });
+  sel.value=DATA.operators.indexOf(old)!==-1 ? old : '__all';
+  sel.disabled=false;
+  sel.removeAttribute('title');
+}
+function refreshDataAge(){
+  var el=document.getElementById('data-age');
+  var decoText=DATA.decoCompatible
+    ? ageText('DECO',DATA.sourceDates.deco)
+    : (DATA.availableSources.deco ? 'DECO: sin datos equivalentes' : 'DECO: no disponible');
+  if(el) el.textContent=ageText('GTFS',DATA.sourceDates.gtfs)+' · '+decoText;
+  var side=document.getElementById('sidebar-source-summary');
+  if(side){
+    var gtfsDate=DATA.sourceDates.gtfs?formatDatasetDate(DATA.sourceDates.gtfs):'fecha no detectada';
+    var available=['GTFS'];
+    if(DATA.availableSources.deco) available.push('DECO');
+    if(DATA.availableSources.param) available.push('Parámetros');
+    side.innerHTML='<strong>'+esc(gtfsDate)+'</strong><br><span>'+esc(available.join(' · '))+'</span>';
+  }
+}
+function sortServices(a,b){
+  var order = {L:1,LJ:2,V:3,S:4,D:5,F:6};
+  return (order[a]||99)-(order[b]||99) || String(a).localeCompare(String(b),undefined,{numeric:true});
+}
+function serviceLabel(sid){
+  if(SVC[sid]) return SVC[sid];
+  var c = DATA.calendar[sid];
+  if(c){
+    var flags = ['monday','tuesday','wednesday','thursday','friday','saturday','sunday'].map(function(k){return String(c[k])==='1'||c[k]===1;});
+    var active = flags.map(function(v,i){return v?DAY_NAMES[i]:null;}).filter(Boolean);
+    if(active.length===5 && flags.slice(0,5).every(Boolean) && !flags[5] && !flags[6]) return 'Lunes a Viernes';
+    if(active.length===7) return 'Todos los días';
+    if(active.length) return active.join(', ');
+  }
+  return sid;
+}
+function tripDir(t){ return String(t.direction_id==null||t.direction_id===''?0:t.direction_id); }
+function dirName(dir){ return String(dir)==='1'?'Regreso':'Ida'; }
+function getTripStartOffset(tripId){
+  var st = DATA.stopTimes[tripId]||[];
+  if(!st.length) return 0;
+  return timeToSecs(st[0].departure_time||st[0].arrival_time||'0:00:00');
+}
+function getStopOffsetInTrip(tripId, stopTimeRow){
+  return timeToSecs(stopTimeRow.departure_time||stopTimeRow.arrival_time||'0:00:00') - getTripStartOffset(tripId);
+}
+
+
+async function parseDECOFile(file){
+  var txt='';
+  if(/\.zip$/i.test(file.name||'')){
+    var zip=await JSZip.loadAsync(file);
+    var names=Object.keys(zip.files).filter(function(n){return /\.csv$/i.test(n);});
+    if(!names.length) throw new Error('El ZIP DECO no contiene CSV.');
+    txt=await zip.file(names[0]).async('string');
+  } else {
+    txt=await file.text();
+  }
+  var rows=Papa.parse(txt.trim(),{header:true,skipEmptyLines:true,dynamicTyping:false,delimiter:';'}).data;
+  DATA.decoRows=rows.filter(function(r){return r && (r.CODIGO_USUARIO||r.CODIGO_MTT||r.SERVICIO_DECO||r.CODIGO_RUTA);});
+  DATA.decoByRoute={};
+  DATA.decoRows.forEach(function(r){
+    [r.CODIGO_USUARIO,r.CODIGO_MTT,r.SERVICIO_DECO].forEach(function(k){
+      var key=normalizeOpKey(k); if(!key) return;
+      if(!DATA.decoByRoute[key]) DATA.decoByRoute[key]=[];
+      DATA.decoByRoute[key].push(r);
+    });
+  });
+  DATA.operators=unique(DATA.decoRows.map(operatorFromDeco)).sort(function(a,b){return a.localeCompare(b,undefined,{numeric:true});});
+}
+
+function parseGTFSInWorker(file){
+  return new Promise(function(resolve, reject){
+    if(!window.Worker){
+      reject(new Error('Este navegador no soporta Web Workers.'));
+      return;
+    }
+    var worker = new Worker(new URL('assets/js/gtfs-worker.js', window.location.href));
+    var done=false;
+    worker.onmessage=function(e){
+      var msg=e.data||{};
+      if(msg.type==='progress') prog(msg.pct||0, msg.text||'Procesando...');
+      if(msg.type==='done'){
+        done=true;
+        worker.terminate();
+        resolve(msg.data);
+      }
+      if(msg.type==='error'){
+        done=true;
+        worker.terminate();
+        reject(new Error(msg.message||'No se pudo leer el GTFS.'));
+      }
+    };
+    worker.onerror=function(err){
+      if(done) return;
+      worker.terminate();
+      reject(new Error(err.message||'Error en el procesador GTFS.'));
+    };
+    worker.postMessage({file:file});
   });
 }
-function fillControls(){
-  setOptions($('operator-select'),['Todos'].concat(DATA.operators),function(x){return x},function(x){return x});
-  fillRoutes();
-  setOptions($('service-select'),DATA.serviceIds,function(x){return x},function(x){return serviceLabel(x)+' ('+x+')'});
-  currentService=$('service-select').value||DATA.serviceIds[0]||'';
+
+async function handleFile(file, decoFile, paramItem){
+  if(!file) return;
+  DATA = freshData();
+  DATA.availableSources.gtfs=true;
+  DATA.availableSources.deco=!!decoFile;
+  DATA.availableSources.param=!!(paramItem && paramItem.file);
+  DATA.sourceNames.gtfs=file.name||'gtfs.zip';
+  DATA.sourceNames.deco=decoFile ? (decoFile.name||'deco') : '';
+  DATA.sourceNames.param=DATA.availableSources.param ? paramItem.file.name : '';
+  DATA.sourceDates.gtfs=extractDateFromName(DATA.sourceNames.gtfs);
+  DATA.sourceDates.deco=decoFile ? extractDateFromName(DATA.sourceNames.deco) : null;
+  DATA.sourceDates.param=DATA.availableSources.param ? paramItem.date : null;
+  updateDecoCompatibility();
+  try{
+    if(decoFile){
+      prog(5,'Leyendo DECO…');
+      try{
+        await parseDECOFile(decoFile);
+      }catch(decoErr){
+        console.warn('El DECO no pudo procesarse. Se continuará solo con GTFS.',decoErr);
+        DATA.decoRows=[];
+        DATA.decoByRoute={};
+        DATA.operators=[];
+        DATA.availableSources.deco=false;
+        DATA.sourceNames.deco='';
+        DATA.sourceDates.deco=null;
+        updateDecoCompatibility();
+      }
+    }
+    prog(8,'Procesando GTFS…');
+    var parsed=await parseGTFSInWorker(file);
+    Object.keys(parsed).forEach(function(k){DATA[k]=parsed[k];});
+    prog(100,'Datos listos');
+    setTimeout(function(){
+      document.getElementById('upload-section').style.display='none';
+      document.getElementById('app').style.display='block';
+      document.getElementById('btn-reload').style.display='inline-flex';
+      buildUI();
+      initMap();
+      renderMap();
+    },120);
+  }catch(err){
+    console.error(err);
+    prog(0,err.message||'No se pudo cargar el GTFS.');
+    alert(err.message||'No se pudo cargar el GTFS.');
+  }
 }
-function fillRoutes(){
-  var op=$('operator-select').value||'Todos';
-  var routes=DATA.routesList.filter(function(r){return op==='Todos'||inferOperator(r)===op});
-  setOptions($('route-select'),routes,function(r){return r.route_id},function(r){return routeName(r)+' — '+(routeLong(r)||inferOperator(r))},'Selecciona recorrido');
-  currentRouteId=$('route-select').value||''; if(currentRouteId) selectRoute(currentRouteId); else clearRoute();
+
+function tabAvailability(){
+  var gtfs=!!(DATA.availableSources && DATA.availableSources.gtfs);
+  var params=!!(DATA.availableSources && DATA.availableSources.param);
+  return {
+    resumen:gtfs,
+    ruta:gtfs,
+    paradero:gtfs,
+    parametros:params,
+    simulacion:gtfs,
+    comparar:gtfs
+  };
 }
-function routeTrips(routeId){return DATA.tripsByRoute[String(routeId)]||[]}
-function routeServices(routeId){return unique(routeTrips(routeId).map(function(t){return t.service_id})).sort()}
-function routeDirs(routeId){return unique(routeTrips(routeId).map(function(t){return String(t.direction_id||'0')})).sort()}
-function representativeTrip(routeId,dir,svc){
-  var trips=routeTrips(routeId).filter(function(t){return (dir==='both'||String(t.direction_id||'0')===String(dir))&&(!svc||String(t.service_id)===String(svc))});
-  if(!trips.length) trips=routeTrips(routeId).filter(function(t){return dir==='both'||String(t.direction_id||'0')===String(dir)});
-  trips.sort(function(a,b){return (DATA.stopTimes[b.trip_id]||[]).length-(DATA.stopTimes[a.trip_id]||[]).length}); return trips[0]||null;
-}
-function selectRoute(routeId){
-  currentRouteId=routeId; var r=DATA.routes[routeId];
-  var services=routeServices(routeId); if(services.length){setOptions($('service-select'),services,function(x){return x},function(x){return serviceLabel(x)+' ('+x+')'}); if(services.indexOf(currentService)<0) currentService=services[0]; $('service-select').value=currentService}
-  var dirs=routeDirs(routeId); ['0','1'].forEach(function(d){$('dir-'+d).style.display=dirs.indexOf(d)>=0?'block':'none'}); $('dir-both').style.display=dirs.length>1?'block':'none'; if(dirs.indexOf(currentDir)<0) currentDir=dirs[0]||'0'; setDirButtons();
-  drawRoute();
-  $('hud-title').textContent='Recorrido '+routeName(r); $('hud-subtitle').textContent=(routeLong(r)||inferOperator(r))+' · '+serviceLabel(currentService);
-}
-function setDirButtons(){['0','1','both'].forEach(function(d){$('dir-'+d).classList.toggle('active',String(currentDir)===String(d))})}
-function clearRoute(){ routeShapeLayers.forEach(function(l){map.removeLayer(l)}); routeShapeLayers=[]; routeStopsLayer.clearLayers(); $('route-summary').innerHTML='<span class="muted">Selecciona un recorrido para ver trazado, paradas e información.</span>'; $('route-stops').innerHTML=''; }
-function drawRoute(){
-  clearRoute(); var route=DATA.routes[currentRouteId]; if(!route) return;
-  var dirs=currentDir==='both'?routeDirs(currentRouteId):[currentDir]; var bounds=[]; var stopIds=[];
-  dirs.forEach(function(dir,idx){
-    var trip=representativeTrip(currentRouteId,dir,currentService); if(!trip) return;
-    var shape=trip.shape_id?DATA.shapes[trip.shape_id]:null;
-    var color=dir==='1'?'#dc2626':routeColor(route);
-    if(shape&&shape.length){var latlngs=shape.map(function(p){return [p.lat,p.lng]}); var line=L.polyline(latlngs,{color:color,weight:5,opacity:.88}).addTo(map); routeShapeLayers.push(line); bounds=bounds.concat(latlngs)}
-    var st=(DATA.stopTimes[trip.trip_id]||[]).map(function(x){return DATA.stops[x.stop_id]}).filter(Boolean); stopIds=stopIds.concat(st.map(function(s){return s.stop_id}));
-    if($('toggle-route-stops').checked) st.forEach(function(s,i){if(!isFinite(s.stop_lat)||!isFinite(s.stop_lon))return; var m=L.circleMarker([s.stop_lat,s.stop_lon],{radius:i===0||i===st.length-1?7:5,color:i===0?'#16a34a':i===st.length-1?'#dc2626':'#0f172a',fillColor:color,fillOpacity:.95,weight:2}).bindPopup(stopPopupHtml(s)).on('click',function(){selectedStopId=s.stop_id;showStopDetail(s.stop_id)}).addTo(routeStopsLayer); bounds.push([s.stop_lat,s.stop_lon])});
+function configureAvailableTabs(){
+  var available=tabAvailability();
+  document.querySelectorAll('.tab-btn[data-tab]').forEach(function(button){
+    var tab=button.getAttribute('data-tab');
+    var enabled=!!available[tab];
+    button.style.display=enabled?'':'none';
+    button.setAttribute('aria-hidden',enabled?'false':'true');
   });
-  if(bounds.length) map.fitBounds(L.latLngBounds(bounds),{padding:[48,48],maxZoom:15});
-  renderRouteSummary(route,unique(stopIds));
+  Object.keys(available).forEach(function(tab){
+    var panel=document.getElementById('tab-'+tab);
+    if(panel && !available[tab]) panel.style.display='none';
+  });
+  var first=['resumen','ruta','paradero','parametros','simulacion','comparar'].find(function(tab){return available[tab];});
+  if(first) switchTab(first);
 }
-function renderRouteSummary(route,stopIds){
-  var trips=routeTrips(currentRouteId).filter(function(t){return !currentService||t.service_id===currentService});
-  $('route-summary').innerHTML='<div class="summary-title"><span class="route-badge" style="background:'+routeColor(route)+';color:'+textColor(route)+'">'+esc(routeName(route))+'</span></div><div><b>'+esc(routeLong(route)||'Sin nombre largo')+'</b></div><div class="muted">Operador: '+esc(inferOperator(route))+'</div><div class="muted">Viajes: '+trips.length+' · Paraderos: '+stopIds.length+' · Día: '+esc(serviceLabel(currentService))+'</div>';
-  var rows=stopIds.slice(0,140).map(function(id,i){var s=DATA.stops[id]||{}; return '<div class="stop-row" data-stop="'+esc(id)+'"><div class="stop-index">'+(i+1)+'</div><div><div class="stop-name">'+esc(cleanName(s.stop_name||id))+'</div><div class="stop-id">'+esc(id)+'</div></div></div>'}).join('');
-  $('route-stops').innerHTML=rows||'<span class="muted">Sin paraderos para el recorrido.</span>';
-  Array.prototype.forEach.call($('route-stops').querySelectorAll('.stop-row'),function(el){el.addEventListener('click',function(){selectStop(el.dataset.stop,true)})});
+
+
+function medianNumber(values){
+  var nums=(values||[]).filter(function(v){return v!==null&&v!==undefined&&!isNaN(v);}).map(Number).sort(function(a,b){return a-b;});
+  if(!nums.length) return null;
+  var mid=Math.floor(nums.length/2);
+  return nums.length%2 ? nums[mid] : (nums[mid-1]+nums[mid])/2;
 }
-function stopPopupHtml(s){return '<div class="popup-title">'+esc(cleanName(s.stop_name||s.stop_id))+'</div><div class="muted">'+esc(s.stop_id)+'</div><div class="popup-actions"><button onclick="window.__selectStopFromPopup(\''+esc(String(s.stop_id)).replace(/&#39;/g,"\\'")+'\')">Ver detalle</button></div>'}
-window.__selectStopFromPopup=function(id){selectStop(id,false)};
-function selectStop(stopId,pan){selectedStopId=stopId; var s=DATA.stops[stopId]; if(!s) return; switchTab('paradero'); showStopDetail(stopId); if(pan&&isFinite(s.stop_lat)&&isFinite(s.stop_lon)) map.setView([s.stop_lat,s.stop_lon], Math.max(map.getZoom(),16));}
-function routesAtStop(stopId){
-  var mapR={}; (DATA.stopTrips[stopId]||[]).forEach(function(e){var t=DATA.trips[e.trip_id]; if(!t)return; var r=DATA.routes[t.route_id]; if(!r)return; if(!mapR[t.route_id]) mapR[t.route_id]={route:r,dirs:{},heads:{},count:0}; mapR[t.route_id].dirs[t.direction_id||'0']=1; if(t.trip_headsign)mapR[t.route_id].heads[t.trip_headsign]=1; mapR[t.route_id].count++});
-  return Object.values(mapR).sort(function(a,b){return routeName(a.route).localeCompare(routeName(b.route),undefined,{numeric:true})});
+function percent(value,total){
+  return total>0 ? Math.round((value/total)*100) : 0;
 }
-function arrivalsAtStop(stopId){
-  var rows=[]; (DATA.stopTrips[stopId]||[]).forEach(function(e){var t=DATA.trips[e.trip_id]; if(!t||currentService&&t.service_id!==currentService)return; var r=DATA.routes[t.route_id]; var st=e.stopTime||{}; rows.push({sec:timeSecs(st.arrival_time||st.departure_time),time:timeShort(st.arrival_time||st.departure_time),route:r,trip:t,head:t.trip_headsign||''})});
-  rows.sort(function(a,b){return a.sec-b.sec}); return rows.slice(0,180);
+function estimatedTripInstances(trip){
+  if(!trip) return 0;
+  var freqs=(DATA.frequenciesByTrip && DATA.frequenciesByTrip[trip.trip_id]) || [];
+  if(!freqs.length) return 1;
+  return freqs.reduce(function(sum,f){
+    var start=timeToSecs(f.start_time), end=timeToSecs(f.end_time), step=csvNum(f.headway_secs,0);
+    if(step<=0 || end<=start) return sum;
+    return sum+Math.ceil((end-start)/step);
+  },0);
 }
-function showStopDetail(stopId){
-  var s=DATA.stops[stopId]; if(!s) return;
-  var rs=routesAtStop(stopId); var arr=arrivalsAtStop(stopId);
-  var routeHtml=rs.map(function(x){var r=x.route; return '<div class="route-row"><span class="route-badge" style="background:'+routeColor(r)+';color:'+textColor(r)+'">'+esc(routeName(r))+'</span><div><b>'+esc(routeLong(r)||Object.keys(x.heads).join(' / ')||'Recorrido')+'</b><div class="stop-id">'+esc(inferOperator(r))+' · sentidos '+esc(Object.keys(x.dirs).join('/'))+' · '+x.count+' pasadas</div></div></div>'}).join('')||'<span class="muted">Sin recorridos asociados.</span>';
-  var arrivals=arr.slice(0,36).map(function(a){return '<div class="arrival-row"><b>'+esc(a.time)+'</b><span class="route-badge" style="background:'+routeColor(a.route)+';color:'+textColor(a.route)+'">'+esc(routeName(a.route))+'</span><span>'+esc(a.head||routeLong(a.route)||'')+'</span></div>'}).join('')||'<span class="muted">Sin llegadas para el tipo de día seleccionado.</span>';
-  $('stop-detail').classList.remove('muted'); $('stop-detail').innerHTML='<h3>'+esc(cleanName(s.stop_name||stopId))+'</h3><div class="muted">'+esc(stopId)+' · '+(isFinite(s.stop_lat)?(+s.stop_lat).toFixed(5)+', '+(+s.stop_lon).toFixed(5):'sin coordenadas')+'</div><h4>Recorridos que pasan</h4>'+routeHtml+'<h4>Llegadas programadas · '+esc(serviceLabel(currentService))+'</h4>'+arrivals;
+function primaryServiceId(){
+  var services=(DATA.serviceIds||[]).slice().sort(sortServices);
+  return services.indexOf('L')!==-1?'L':(services.indexOf('LJ')!==-1?'LJ':(services[0]||''));
 }
-function setupSearch(){
-  var input=$('stop-search'), box=$('suggestions');
-  input.addEventListener('input',function(){var q=norm(input.value); box.innerHTML=''; if(q.length<2){box.classList.add('hidden');return} var hits=Object.values(DATA.stopIndex).filter(function(x){return norm(x.name+' '+x.s.stop_id+' '+(x.s.stop_desc||'')).indexOf(q)>=0}).slice(0,18); hits.forEach(function(x){var div=document.createElement('div');div.className='suggestion';div.innerHTML='<b>'+esc(x.name)+'</b><span class="stop-id">'+esc(x.s.stop_id)+'</span>';div.addEventListener('click',function(){input.value=x.name;box.classList.add('hidden');selectStop(x.s.stop_id,true)});box.appendChild(div)}); box.classList.toggle('hidden',!hits.length)});
+function buildNetworkAnalytics(){
+  if(DATA.analytics) return DATA.analytics;
+  var serviceId=primaryServiceId();
+  var trips=serviceId ? (DATA.tripsByService[serviceId]||[]) : Object.values(DATA.trips);
+  var activeRoutes={}, usedStops={}, routeOffer={}, earliest=null, latest=null;
+  var withShape=0, withTimes=0, bothDirs={}, stopCounts=[];
+  trips.forEach(function(t){
+    activeRoutes[t.route_id]=true;
+    if(!routeOffer[t.route_id]) routeOffer[t.route_id]=0;
+    routeOffer[t.route_id]+=estimatedTripInstances(t);
+    if(t.shape_id && DATA.shapes[t.shape_id] && DATA.shapes[t.shape_id].length) withShape++;
+    var st=DATA.stopTimes[t.trip_id]||[];
+    if(st.length){
+      withTimes++;
+      stopCounts.push(st.length);
+      st.forEach(function(row){usedStops[row.stop_id]=true;});
+      var first=timeToSecs(st[0].departure_time||st[0].arrival_time||'');
+      var last=timeToSecs(st[st.length-1].arrival_time||st[st.length-1].departure_time||'');
+      if(first || first===0) earliest=earliest===null?first:Math.min(earliest,first);
+      if(last || last===0) latest=latest===null?last:Math.max(latest,last);
+    }
+    if(!bothDirs[t.route_id]) bothDirs[t.route_id]={};
+    bothDirs[t.route_id][tripDir(t)]=true;
+  });
+  var allStops=Object.values(DATA.stops);
+  var coords=allStops.filter(function(s){return s.stop_lat!==null&&s.stop_lon!==null&&!isNaN(s.stop_lat)&&!isNaN(s.stop_lon);}).length;
+  var routeRows=Object.keys(routeOffer).map(function(rid){
+    var route=DATA.routes[rid]||{};
+    return {route:route,id:rid,label:route.route_short_name||route.route_id||rid,offer:routeOffer[rid]};
+  }).sort(function(a,b){return b.offer-a.offer || String(a.label).localeCompare(String(b.label),undefined,{numeric:true});});
+  var bothCount=Object.keys(activeRoutes).filter(function(rid){return bothDirs[rid]&&bothDirs[rid]['0']&&bothDirs[rid]['1'];}).length;
+  DATA.analytics={
+    serviceId:serviceId,
+    serviceLabel:serviceLabel(serviceId),
+    trips:trips.length,
+    activeRoutes:Object.keys(activeRoutes).length,
+    usedStops:Object.keys(usedStops).length,
+    estimatedDepartures:routeRows.reduce(function(sum,r){return sum+r.offer;},0),
+    earliest:earliest,
+    latest:latest,
+    coordsPct:percent(coords,allStops.length),
+    shapePct:percent(withShape,trips.length),
+    stopTimesPct:percent(withTimes,trips.length),
+    bothDirsPct:percent(bothCount,Object.keys(activeRoutes).length),
+    medianStops:medianNumber(stopCounts),
+    routeRows:routeRows
+  };
+  return DATA.analytics;
 }
-function switchTab(name){
-  Array.prototype.forEach.call(document.querySelectorAll('.tab'),function(t){t.classList.toggle('active',t.dataset.tab===name)});
-  ['explorar','paradero','capas'].forEach(function(n){$('tab-'+n).classList.toggle('hidden',n!==name)});
+function metricCard(label,value,sub){
+  return '<div class="metric-card"><div class="lbl">'+esc(label)+'</div><div class="val">'+esc(value)+'</div>'+(sub?'<div class="sub">'+esc(sub)+'</div>':'')+'</div>';
 }
-function renderStats(){
-  $('stats').innerHTML='<div class="stat"><span>Recorridos</span><b>'+Object.keys(DATA.routes).length+'</b></div><div class="stat"><span>Paraderos</span><b>'+Object.keys(DATA.stops).length+'</b></div><div class="stat"><span>Viajes</span><b>'+Object.keys(DATA.trips).length+'</b></div><div class="stat"><span>Shapes</span><b>'+Object.keys(DATA.shapes).length+'</b></div>';
+function sourceStatus(label,available,detail,warning){
+  return '<div class="source-item '+(available?(warning?'warn':'ok'):'')+'"><span class="source-dot"></span><div><strong>'+esc(label)+'</strong><small>'+esc(detail)+'</small></div></div>';
 }
-function bindAppEvents(){
-  if(bindAppEvents.done) return; bindAppEvents.done=true;
-  $('operator-select').addEventListener('change',fillRoutes); $('route-select').addEventListener('change',function(){selectRoute(this.value)}); $('service-select').addEventListener('change',function(){currentService=this.value; if(currentRouteId)selectRoute(currentRouteId); if(selectedStopId)showStopDetail(selectedStopId)});
-  $('dir-0').addEventListener('click',function(){currentDir='0';setDirButtons();drawRoute()}); $('dir-1').addEventListener('click',function(){currentDir='1';setDirButtons();drawRoute()}); $('dir-both').addEventListener('click',function(){currentDir='both';setDirButtons();drawRoute()});
-  Array.prototype.forEach.call(document.querySelectorAll('.tab'),function(t){t.addEventListener('click',function(){switchTab(t.dataset.tab)})});
-  $('toggle-stops').addEventListener('change',function(){renderVisibleStops()}); $('toggle-route-stops').addEventListener('change',function(){drawRoute()}); $('toggle-traffic').addEventListener('change',toggleTraffic);
-  $('save-traffic-key').addEventListener('click',function(){localStorage.setItem('tomtomTrafficKey',$('traffic-key').value.trim()); toggleTraffic();}); $('traffic-key').value=localStorage.getItem('tomtomTrafficKey')||'';
-  $('btn-reload').addEventListener('click',function(){location.reload()}); $('mobile-panel').addEventListener('click',function(){$('.sidebar')});
-  var mp=$('mobile-panel'), sb=document.querySelector('.sidebar'); mp.addEventListener('click',function(){sb.classList.toggle('open')});
-  setupSearch();
+function renderOverview(){
+  var a=buildNetworkAnalytics();
+  var stats=document.getElementById('stats-row');
+  if(stats){
+    var windowLabel=(a.earliest===null||a.latest===null)?'—':secsToTime(a.earliest)+'–'+secsToTime(a.latest);
+    stats.innerHTML=[
+      ['Recorridos activos',a.activeRoutes.toLocaleString('es-CL'),a.serviceLabel],
+      ['Salidas estimadas',a.estimatedDepartures.toLocaleString('es-CL'),'día tipo seleccionado'],
+      ['Paradas utilizadas',a.usedStops.toLocaleString('es-CL'),'con atención programada'],
+      ['Ventana de servicio',windowLabel,'primera salida a última llegada']
+    ].map(function(x){return '<div class="stat-card"><div class="lbl">'+esc(x[0])+'</div><div class="val">'+esc(x[1])+'</div><div class="sub">'+esc(x[2])+'</div></div>';}).join('');
+  }
+
+  var health=document.getElementById('overview-health');
+  if(health){
+    health.innerHTML=[
+      ['Paraderos con coordenadas',a.coordsPct],
+      ['Viajes con trazado',a.shapePct],
+      ['Viajes con horarios',a.stopTimesPct],
+      ['Recorridos con ambos sentidos',a.bothDirsPct]
+    ].map(function(item){
+      return '<div class="health-item"><strong>'+esc(item[0])+'</strong><span>'+item[1]+'%</span><div class="health-bar"><i style="width:'+item[1]+'%"></i></div></div>';
+    }).join('');
+  }
+
+  var sources=document.getElementById('overview-sources');
+  if(sources){
+    var decoDetail=!DATA.availableSources.deco?'No vinculado a esta publicación':
+      (DATA.decoCompatible?'Compatible · '+(DATA.decoDateGapDays||0)+' días de diferencia':'Disponible, pero fuera del rango de 6 días');
+    sources.innerHTML=
+      sourceStatus('GTFS',true,DATA.sourceNames.gtfs||'Archivo cargado',false)+
+      sourceStatus('DECO',DATA.availableSources.deco,decoDetail,DATA.availableSources.deco&&!DATA.decoCompatible)+
+      sourceStatus('Parámetros',DATA.availableSources.param,DATA.availableSources.param?(DATA.sourceNames.param||'Consolidado vinculado'):'No vinculado a esta publicación',false);
+  }
+
+  var diagnostics=document.getElementById('overview-diagnostics');
+  if(diagnostics){
+    var avgOffer=a.activeRoutes?Math.round(a.estimatedDepartures/a.activeRoutes):0;
+    diagnostics.innerHTML=[
+      ['Día analizado',a.serviceLabel,'Se usa para comparar oferta entre recorridos.'],
+      ['Mediana de paradas',a.medianStops===null?'—':Math.round(a.medianStops),'Cantidad de paradas por viaje plantilla.'],
+      ['Oferta media',avgOffer.toLocaleString('es-CL'),'Salidas estimadas por recorrido activo.'],
+      ['Tipos de servicio',(DATA.serviceIds||[]).length,'Identificadores de calendario presentes.'],
+      ['Operadores',DATA.decoCompatible?DATA.operators.length:'No disponible','Solo se usa DECO cuando cumple la ventana de 6 días.'],
+      ['Conexiones internas',(DATA.pathways||[]).length.toLocaleString('es-CL'),'Registros disponibles en pathways.txt.']
+    ].map(function(item){return '<div class="diagnostic-item"><strong>'+esc(item[0])+' · '+esc(item[1])+'</strong><span>'+esc(item[2])+'</span></div>';}).join('');
+  }
+
+  var canvas=document.getElementById('overview-chart');
+  if(canvas && window.Chart){
+    if(overviewChart) overviewChart.destroy();
+    var top=a.routeRows.slice(0,10);
+    overviewChart=new Chart(canvas.getContext('2d'),{
+      type:'bar',
+      data:{
+        labels:top.map(function(r){return r.label;}),
+        datasets:[{label:'Salidas estimadas',data:top.map(function(r){return r.offer;}),backgroundColor:'rgba(152,37,28,.82)',borderRadius:5}]
+      },
+      options:{
+        indexAxis:'y',responsive:true,maintainAspectRatio:false,
+        plugins:{legend:{display:false},tooltip:{callbacks:{afterLabel:function(){return a.serviceLabel;}}}},
+        scales:{
+          x:{beginAtZero:true,grid:{color:'rgba(23,32,39,.06)'},title:{display:true,text:'salidas estimadas'}},
+          y:{grid:{display:false}}
+        }
+      }
+    });
+  }
 }
-function toggleTraffic(){
-  if(!$('toggle-traffic').checked){ if(trafficLayer){map.removeLayer(trafficLayer); trafficLayer=null} return; }
-  var key=($('traffic-key').value||localStorage.getItem('tomtomTrafficKey')||'').trim();
-  if(!key){$('toggle-traffic').checked=false; alert('Para tráfico vehicular en vivo necesitas una API key de TomTom u otro proveedor compatible. OSM/Leaflet no entregan tráfico en vivo por sí solos.'); return;}
-  if(trafficLayer) map.removeLayer(trafficLayer);
-  trafficLayer=L.tileLayer('https://api.tomtom.com/traffic/map/4/tile/flow/relative0/{z}/{x}/{y}.png?key='+encodeURIComponent(key),{maxZoom:20,opacity:.72,attribution:'Traffic &copy; TomTom'}).addTo(map);
+
+function buildUI(){
+  var selR=document.getElementById('sel-route');
+  selR.innerHTML='';
+  Object.values(DATA.routes)
+    .filter(function(r){return (DATA.tripsByRoute[String(r.route_id)]||[]).length>0;})
+    .sort(function(a,b){return String(a.route_short_name||a.route_id).localeCompare(String(b.route_short_name||b.route_id),undefined,{numeric:true});})
+    .forEach(function(r){
+      var o=document.createElement('option');
+      o.value=r.route_id;
+      o.textContent=(r.route_short_name||r.route_id)+' — '+(r.route_long_name||'Sin nombre');
+      selR.appendChild(o);
+    });
+
+  fillOperatorSelect('sel-operator');
+  fillOperatorSelect('sel-operator-stop');
+  setupSimulationSelectors();
+  refreshDataAge();
+  updateStopGlobalServices();
+
+  selR.addEventListener('change',function(){updateRouteServiceOptions();renderAll();});
+  document.getElementById('sel-operator').addEventListener('change',updateRouteOptionsByOperator);
+  document.getElementById('sel-operator-stop').addEventListener('change',function(){if(activeStop) renderStop(activeStop);});
+  document.getElementById('sel-service').addEventListener('change',renderAll);
+  document.getElementById('sel-service-stop').addEventListener('change',function(){if(activeStop) renderStop(activeStop);});
+
+  bindSimulationEvents();
+  setupStopSearch();
+  updateRouteServiceOptions();
+  renderOverview();
+  renderAll();
+  configureAvailableTabs();
 }
-document.addEventListener('DOMContentLoaded',function(){
-  $('btn-load-github').addEventListener('click',loadGithub); $('btn-load-manual').addEventListener('click',loadManual);
-  $('file-input').addEventListener('change',function(e){MANUAL_GTFS_FILE=e.target.files[0]||null;updateManualLabel()}); $('deco-file-input').addEventListener('change',function(e){MANUAL_DECO_FILE=e.target.files[0]||null;updateManualLabel()});
-  initGithub();
+
+
+function updateRouteOptionsByOperator(){
+  var op=document.getElementById('sel-operator').value;
+  var selR=document.getElementById('sel-route'), old=selR.value;
+  selR.innerHTML='';
+  var routes=Object.values(DATA.routes)
+    .filter(function(r){return (DATA.tripsByRoute[String(r.route_id)]||[]).length>0 && routeMatchesOperator(r,op);})
+    .sort(function(a,b){return String(a.route_short_name).localeCompare(String(b.route_short_name),undefined,{numeric:true});});
+  routes.forEach(function(r){ var o=document.createElement('option'); o.value=r.route_id; o.textContent=(r.route_short_name||r.route_id)+' — '+(r.route_long_name||''); selR.appendChild(o); });
+  if(routes.some(function(r){return String(r.route_id)===String(old);})) selR.value=old;
+  updateRouteServiceOptions(); renderAll();
+}
+function routeServices(routeId){
+  return unique((DATA.tripsByRoute[String(routeId)]||[]).map(function(t){return t.service_id;})).sort(sortServices);
+}
+function routeDirs(routeId, serviceId){
+  return unique((DATA.tripsByRoute[String(routeId)]||[]).filter(function(t){return String(t.service_id)===String(serviceId);}).map(function(t){return tripDir(t);})).sort();
+}
+function fillServiceSelect(sel, services){
+  var old=sel.value; sel.innerHTML='';
+  services.forEach(function(s){ var o=document.createElement('option'); o.value=s; o.textContent=serviceLabel(s); sel.appendChild(o); });
+  if(services.indexOf(old)!==-1) sel.value=old;
+  else if(services.length) sel.value=services[0];
+}
+function updateRouteServiceOptions(){
+  var routeId=document.getElementById('sel-route').value;
+  fillServiceSelect(document.getElementById('sel-service'), routeServices(routeId));
+  syncDirectionControls();
+}
+function updateStopGlobalServices(){
+  fillServiceSelect(document.getElementById('sel-service-stop'), DATA.serviceIds);
+}
+function stopServices(stopId){
+  return unique((DATA.stopTrips[stopId]||[]).map(function(e){var t=DATA.trips[e.trip_id]; return t?t.service_id:null;})).sort(sortServices);
+}
+function updateStopServiceOptions(stopId){
+  var services=stopServices(stopId);
+  if(services.length) fillServiceSelect(document.getElementById('sel-service-stop'), services);
+}
+function syncDirectionControls(){
+  var routeId=document.getElementById('sel-route').value;
+  var svcId=document.getElementById('sel-service').value;
+  var dirs=routeDirs(routeId, svcId);
+  if(dirs.indexOf(String(curMapDir))===-1 && curMapDir!==-1) curMapDir = dirs.indexOf('0')!==-1 ? 0 : Number(dirs[0]||0);
+  if(dirs.length<2 && curMapDir===-1) curMapDir = Number(dirs[0]||0);
+  if(dirs.indexOf(String(curStopsDir))===-1) curStopsDir = dirs.indexOf('0')!==-1 ? 0 : Number(dirs[0]||0);
+
+  ['map-btn-0','map-btn-1','map-btn-both','stops-btn-0','stops-btn-1'].forEach(function(id){var el=document.getElementById(id); if(el) el.style.display='none';});
+  if(dirs.indexOf('0')!==-1){ document.getElementById('map-btn-0').style.display='inline-block'; document.getElementById('stops-btn-0').style.display='inline-block'; }
+  if(dirs.indexOf('1')!==-1){ document.getElementById('map-btn-1').style.display='inline-block'; document.getElementById('stops-btn-1').style.display='inline-block'; }
+  if(dirs.length>1) document.getElementById('map-btn-both').style.display='inline-block';
+  setMapDir(curMapDir, true);
+  setStopsDir(curStopsDir, true);
+}
+
+
+function setParamStatus(txt){
+  var el=document.getElementById('param-status');
+  if(el) el.textContent=txt;
+}
+function ensureParamsLoaded(){
+  if(PARAMS.sheets && PARAMS.sheets.length) return;
+  var sel=document.getElementById('param-file-select');
+  if(sel && sel.value && !PARAMS.loading) loadSelectedParams();
+}
+function xlsxColIndex(ref){
+  var m=String(ref||'').match(/[A-Z]+/); if(!m) return 0;
+  var s=m[0], n=0;
+  for(var i=0;i<s.length;i++) n=n*26+(s.charCodeAt(i)-64);
+  return n-1;
+}
+function xlsxText(xmlNode, tag){
+  var a=xmlNode.getElementsByTagName(tag);
+  return a && a[0] ? a[0].textContent : '';
+}
+function xlsxRelPath(base, target){
+  target=String(target||'');
+  if(target.charAt(0)==='/') return target.replace(/^\//,'');
+  return base.replace(/[^\/]+$/,'')+target;
+}
+function parseSharedStringsXml(xml){
+  if(!xml) return [];
+  var doc=new DOMParser().parseFromString(xml,'application/xml');
+  var si=doc.getElementsByTagName('si'), out=[];
+  for(var i=0;i<si.length;i++){
+    var texts=si[i].getElementsByTagName('t'), s='';
+    for(var j=0;j<texts.length;j++) s+=texts[j].textContent || '';
+    out.push(s);
+  }
+  return out;
+}
+function xlsxCellValue(cell, sharedStrings){
+  var t=cell.getAttribute('t') || '';
+  if(t==='inlineStr'){
+    var inline=cell.getElementsByTagName('is')[0];
+    return inline ? xlsxText(inline,'t') : '';
+  }
+  var v=cell.getElementsByTagName('v')[0];
+  var raw=v ? v.textContent : '';
+  if(t==='s') return sharedStrings[Number(raw)] || '';
+  if(t==='b') return raw==='1' ? 'Sí' : 'No';
+  return raw;
+}
+function excelTimeLabel(v){
+  if(v===null || v===undefined || v==='') return '';
+  var n=Number(v);
+  if(!isNaN(n) && n>=0 && n<1){
+    var total=Math.round(n*86400), h=Math.floor(total/3600)%24, m=Math.floor((total%3600)/60);
+    return String(h).padStart(2,'0')+':'+String(m).padStart(2,'0');
+  }
+  return String(v);
+}
+function paramNumber(v){
+  if(v===null || v===undefined || v==='') return null;
+  var n=Number(String(v).replace(',','.'));
+  return isNaN(n) ? null : n;
+}
+function sheetMetricFromName(name){
+  var m=String(name||'').match(/^([A-Za-zÁÉÍÓÚÑáéíóúñ ]+)\(/);
+  return m ? m[1].trim() : String(name||'');
+}
+function sheetPeriodFromName(name){
+  var m=String(name||'').match(/\(([^)]+)\)/);
+  return m ? m[1].trim() : '';
+}
+async function loadWorkbookMeta(fileObj){
+  var res=await fetch(fileObj.download_url,{cache:'no-store'});
+  if(!res.ok) throw new Error('No se pudo descargar el consolidado ('+res.status+').');
+  var blob=await res.blob();
+  var zip=await JSZip.loadAsync(blob);
+  var wbXml=await zip.file('xl/workbook.xml').async('string');
+  var relXml=await zip.file('xl/_rels/workbook.xml.rels').async('string');
+  var wbDoc=new DOMParser().parseFromString(wbXml,'application/xml');
+  var relDoc=new DOMParser().parseFromString(relXml,'application/xml');
+  var rels={};
+  Array.prototype.forEach.call(relDoc.getElementsByTagName('Relationship'),function(r){
+    rels[r.getAttribute('Id')]=xlsxRelPath('xl/workbook.xml',r.getAttribute('Target'));
+  });
+  var sheets=[];
+  Array.prototype.forEach.call(wbDoc.getElementsByTagName('sheet'),function(s){
+    var rid=s.getAttribute('r:id') || s.getAttribute('id');
+    var name=s.getAttribute('name') || '';
+    if(name.toLowerCase()==='diccio') return;
+    sheets.push({name:name, path:rels[rid], metric:sheetMetricFromName(name), period:sheetPeriodFromName(name)});
+  });
+  PARAMS.file=fileObj; PARAMS.zip=zip; PARAMS.sheets=sheets; PARAMS.cache={}; PARAMS.sharedStrings=null;
+  PARAMS.sourceDate=extractDateFromName(fileObj.name);
+  DATA.sourceNames.param=fileObj.name;
+  DATA.sourceDates.param=PARAMS.sourceDate;
+}
+async function getSharedStrings(){
+  if(PARAMS.sharedStrings) return PARAMS.sharedStrings;
+  var f=PARAMS.zip.file('xl/sharedStrings.xml');
+  PARAMS.sharedStrings=f ? parseSharedStringsXml(await f.async('string')) : [];
+  return PARAMS.sharedStrings;
+}
+async function parseParameterSheet(sheetName){
+  if(PARAMS.cache[sheetName]) return PARAMS.cache[sheetName];
+  var sheet=PARAMS.sheets.find(function(s){return s.name===sheetName;});
+  if(!sheet || !sheet.path) throw new Error('No se encontró la hoja seleccionada.');
+  var xml=await PARAMS.zip.file(sheet.path).async('string');
+  var doc=new DOMParser().parseFromString(xml,'application/xml');
+  var shared=await getSharedStrings();
+  var matrix=[];
+  Array.prototype.forEach.call(doc.getElementsByTagName('row'),function(row){
+    var rIndex=Number(row.getAttribute('r')||0)-1;
+    if(!matrix[rIndex]) matrix[rIndex]=[];
+    Array.prototype.forEach.call(row.getElementsByTagName('c'),function(c){
+      matrix[rIndex][xlsxColIndex(c.getAttribute('r'))]=xlsxCellValue(c,shared);
+    });
+  });
+  var metric=String((matrix[0] && (matrix[0][1] || matrix[0][0])) || sheet.metric || '').trim();
+  var dayRow=matrix[1]||[], bandRow=matrix[2]||[], startRow=matrix[3]||[], endRow=matrix[4]||[];
+  var intervals=[], lastDay='';
+  for(var col=5; col<Math.max(dayRow.length,bandRow.length,startRow.length,endRow.length); col++){
+    if(dayRow[col]) lastDay=String(dayRow[col]);
+    intervals.push({
+      col:col,
+      day:lastDay || '',
+      band:String(bandRow[col]||'').trim(),
+      start:excelTimeLabel(startRow[col]),
+      end:excelTimeLabel(endRow[col])
+    });
+  }
+  var rows=[];
+  for(var i=5;i<matrix.length;i++){
+    var r=matrix[i]||[];
+    if(!r[0] && !r[1] && !r[2]) continue;
+    rows.push({
+      unidad:String(r[0]||'').trim(),
+      codigoTs:String(r[1]||'').trim(),
+      codigoUsuario:String(r[2]||'').trim(),
+      sentido:String(r[3]||'').trim(),
+      tipo:String(r[4]||'').trim(),
+      values:intervals.map(function(it){return r[it.col]===undefined?'':r[it.col];})
+    });
+  }
+  var parsed={sheet:sheet, metric:metric, intervals:intervals, rows:rows};
+  PARAMS.cache[sheetName]=parsed;
+  return parsed;
+}
+function fillParamSheets(){
+  var sel=document.getElementById('param-sheet-select'); if(!sel) return;
+  sel.innerHTML='';
+  PARAMS.sheets.forEach(function(s,i){
+    var o=document.createElement('option');
+    o.value=s.name; o.textContent=s.metric+' — '+s.period;
+    sel.appendChild(o);
+    if(i===0) o.selected=true;
+  });
+}
+async function loadSelectedParams(){
+  syncParamSelects('tab');
+  var sel=document.getElementById('param-file-select');
+  if(!sel || !sel.value){ alert('No hay consolidado seleccionado.'); return; }
+  var fileObj={name:(sel.options[sel.selectedIndex].dataset.name || sel.options[sel.selectedIndex].textContent), download_url:sel.value};
+  PARAMS.loading=true; setParamStatus('Descargando consolidado de parámetros...');
+  try{
+    await loadWorkbookMeta(fileObj);
+    fillParamSheets();
+    setParamStatus('Consolidado cargado. Selecciona indicador/período o usa filtros.');
+    await renderSelectedParamSheet();
+  }catch(err){
+    console.error(err);
+    setParamStatus('No se pudo cargar el consolidado: '+(err.message||err));
+  }finally{
+    PARAMS.loading=false;
+  }
+}
+async function renderSelectedParamSheet(){
+  if(!PARAMS.sheets.length) return;
+  var sheetSel=document.getElementById('param-sheet-select');
+  var sheetName=sheetSel && sheetSel.value ? sheetSel.value : PARAMS.sheets[0].name;
+  setParamStatus('Leyendo hoja seleccionada...');
+  var parsed=await parseParameterSheet(sheetName);
+  PARAMS.activeSheet=sheetName; PARAMS.rows=parsed.rows; PARAMS.intervals=parsed.intervals; PARAMS.metric=parsed.metric;
+  fillParamFilters(parsed);
+  document.getElementById('param-panel').style.display='block';
+  renderParamsTable();
+  setParamStatus('Parámetros listos: '+parsed.rows.length+' filas en '+parsed.sheet.name+'.');
+}
+function fillParamSelect(id, values, allLabel){
+  var sel=document.getElementById(id); if(!sel) return;
+  var old=sel.value; sel.innerHTML='';
+  var all=document.createElement('option'); all.value='__all'; all.textContent=allLabel; sel.appendChild(all);
+  values.forEach(function(v){ var o=document.createElement('option'); o.value=v; o.textContent=v; sel.appendChild(o); });
+  sel.value=values.indexOf(old)!==-1 ? old : '__all';
+}
+function fillParamFilters(parsed){
+  fillParamSelect('param-operator', unique(parsed.rows.map(function(r){return r.unidad;})).sort(), 'Todas');
+  fillParamSelect('param-sentido', unique(parsed.rows.map(function(r){return r.sentido;})).sort(), 'Todos');
+  fillParamSelect('param-tipo', unique(parsed.rows.map(function(r){return r.tipo;})).sort(), 'Todos');
+}
+function filteredParamRows(){
+  var op=document.getElementById('param-operator').value;
+  var sentido=document.getElementById('param-sentido').value;
+  var tipo=document.getElementById('param-tipo').value;
+  var q=normalizeOpKey(document.getElementById('param-route-search').value);
+  return PARAMS.rows.filter(function(r){
+    if(op!=='__all' && r.unidad!==op) return false;
+    if(sentido!=='__all' && r.sentido!==sentido) return false;
+    if(tipo!=='__all' && r.tipo!==tipo) return false;
+    if(q){
+      var hay=normalizeOpKey(r.codigoUsuario+' '+r.codigoTs);
+      if(hay.indexOf(q)===-1) return false;
+    }
+    return true;
+  });
+}
+function renderParamsTable(){
+  var wrap=document.getElementById('param-table-wrap');
+  var title=document.getElementById('param-table-title');
+  var note=document.getElementById('param-sheet-note');
+  var summary=document.getElementById('param-summary');
+  if(!wrap||!PARAMS.rows.length) return;
+  var rows=filteredParamRows();
+  var intervals=PARAMS.intervals||[];
+  var maxRows=180,shown=rows.slice(0,maxRows),nums=[];
+  rows.forEach(function(r){r.values.forEach(function(v){var n=paramNumber(v);if(n!==null) nums.push(n);});});
+  var average=nums.length?nums.reduce(function(a,b){return a+b;},0)/nums.length:null;
+  var med=medianNumber(nums);
+  var min=nums.length?nums.reduce(function(a,b){return Math.min(a,b);},nums[0]):null;
+  var max=nums.length?nums.reduce(function(a,b){return Math.max(a,b);},nums[0]):null;
+  if(title) title.textContent=PARAMS.metric||PARAMS.activeSheet||'Detalle';
+  if(note) note.textContent='Se renderizan hasta '+maxRows+' filas. Los indicadores se calculan sobre todas las filas filtradas.';
+  if(summary){
+    summary.innerHTML=
+      metricCard('Filas filtradas',rows.length.toLocaleString('es-CL'),'registros del consolidado')+
+      metricCard('Intervalos',intervals.length.toLocaleString('es-CL'),'columnas temporales')+
+      metricCard('Promedio',average===null?'—':average.toFixed(2),'valores numéricos')+
+      metricCard('Mediana',med===null?'—':med.toFixed(2),'valor central')+
+      metricCard('Rango',min===null?'—':min.toFixed(2)+'–'+max.toFixed(2),'mínimo a máximo');
+  }
+  if(!rows.length){
+    wrap.innerHTML='<div class="no-data">No hay filas con los filtros actuales.</div>';
+    return;
+  }
+  var head='<tr><th class="sticky-col">Código usuario</th><th>Código TS</th><th>UN</th><th>Sentido</th><th>Tipo</th>'+
+    intervals.map(function(it){return '<th>'+esc(it.day)+'<br><span class="param-cell-muted">'+esc(it.band)+' '+esc(it.start)+'–'+esc(it.end)+'</span></th>';}).join('')+'</tr>';
+  var body=shown.map(function(r){
+    return '<tr><td class="sticky-col"><b>'+esc(r.codigoUsuario)+'</b></td><td>'+esc(r.codigoTs)+'</td><td>'+esc(r.unidad)+'</td><td>'+esc(r.sentido)+'</td><td>'+esc(r.tipo)+'</td>'+
+      r.values.map(function(v){return '<td>'+esc(v===''?'—':v)+'</td>';}).join('')+'</tr>';
+  }).join('');
+  var more=rows.length>maxRows?'<div class="param-status">Hay '+(rows.length-maxRows)+' filas adicionales no renderizadas.</div>':'';
+  wrap.innerHTML='<div class="tbl-wrap"><table class="param-table"><thead>'+head+'</thead><tbody>'+body+'</tbody></table></div>'+more;
+}
+function syncParamRouteFromGTFS(){
+  var sel=document.getElementById('sel-route'), inp=document.getElementById('param-route-search');
+  if(!sel || !sel.value || !inp) return;
+  var r=DATA.routes[sel.value];
+  inp.value = r ? (r.route_short_name || r.route_id || '') : '';
+  if(document.getElementById('tab-parametros').style.display==='none') switchTab('parametros');
+  else renderParamsTable();
+}
+document.addEventListener('change',function(e){
+  if(e.target && e.target.id==='param-sheet-select') renderSelectedParamSheet();
+  if(e.target && /^(param-operator|param-sentido|param-tipo)$/.test(e.target.id)) renderParamsTable();
 });
+document.addEventListener('input',function(e){
+  if(e.target && e.target.id==='param-route-search') renderParamsTable();
+});
+
+
+
+
+function addInstitutionalTiles(map,maxZoom){
+  return L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{
+    attribution:'&copy; OpenStreetMap contributors',
+    maxZoom:maxZoom||19,
+    updateWhenIdle:true,
+    keepBuffer:3
+  }).addTo(map);
+}
+function fitRouteMap(){
+  if(leafMap && routeMapBounds && routeMapBounds.isValid()){
+    leafMap.invalidateSize();
+    leafMap.fitBounds(routeMapBounds,{padding:[28,28],maxZoom:16});
+  }
+}
+
+function initMap(){
+  if(leafMap) return;
+  leafMap=L.map('map',{zoomControl:false,preferCanvas:true}).setView([-33.45,-70.65],11);
+  addInstitutionalTiles(leafMap,19);
+  L.control.zoom({position:'topright'}).addTo(leafMap);
+}
+function setMapDir(dir, skipRender){
+  curMapDir = Number(dir);
+  ['0','1','both'].forEach(function(d){ var el=document.getElementById('map-btn-'+d); if(el) el.classList.toggle('active', String(curMapDir)===(d==='both'?'-1':d)); });
+  if(!skipRender) renderMap();
+}
+function renderMap(){
+  if(!leafMap) return;
+  if(layerIda){leafMap.removeLayer(layerIda);layerIda=null;}
+  if(layerReg){leafMap.removeLayer(layerReg);layerReg=null;}
+  if(layerStops){leafMap.removeLayer(layerStops);layerStops=null;}
+
+  var bounds=[],stopSet={},stopGroup=L.layerGroup();
+  function drawDirection(dir,color){
+    var trips=getTrips(dir);
+    if(!trips.length) return;
+    var group=L.layerGroup();
+    var refTrip=trips.find(function(t){return DATA.stopTimes[t.trip_id]&&DATA.stopTimes[t.trip_id].length;})||trips[0];
+    var shapeTrip=trips.find(function(t){return t.shape_id&&DATA.shapes[t.shape_id]&&DATA.shapes[t.shape_id].length;});
+    var stopSeq=refTrip?(DATA.stopTimes[refTrip.trip_id]||[]):[];
+    var latlngs=[];
+
+    if(shapeTrip){
+      latlngs=DATA.shapes[shapeTrip.shape_id].map(function(p){return [p.lat,p.lng];});
+    }else{
+      latlngs=stopSeq.map(function(st){
+        var stop=DATA.stops[st.stop_id];
+        return stop&&stop.stop_lat!==null&&stop.stop_lon!==null?[+stop.stop_lat,+stop.stop_lon]:null;
+      }).filter(Boolean);
+    }
+
+    if(latlngs.length){
+      L.polyline(latlngs,{color:'#172027',weight:9,opacity:.12,lineCap:'round',lineJoin:'round'}).addTo(group);
+      L.polyline(latlngs,{color:color,weight:5,opacity:.92,lineCap:'round',lineJoin:'round',dashArray:shapeTrip?null:'8 7'}).addTo(group);
+      bounds=bounds.concat(latlngs);
+    }
+
+    stopSeq.forEach(function(st,i){
+      if(stopSet[st.stop_id]) return;
+      stopSet[st.stop_id]=true;
+      var stop=DATA.stops[st.stop_id];
+      if(!stop||stop.stop_lat===null||stop.stop_lon===null) return;
+      var isFirst=i===0,isLast=i===stopSeq.length-1;
+      var dotColor=isFirst?'#15803d':(isLast?'#dc2626':'#46545e');
+      var radius=isFirst||isLast?8:4;
+      var marker=L.circleMarker([+stop.stop_lat,+stop.stop_lon],{
+        radius:radius,fillColor:dotColor,color:'#fff',weight:2,opacity:1,fillOpacity:1
+      });
+      marker.bindTooltip(String(i+1),{direction:'top',offset:[0,-4],opacity:.85});
+      marker.bindPopup(
+        '<b>'+esc(cleanName(stop.stop_name||st.stop_id))+'</b>'+
+        '<br><small>'+esc(st.stop_id)+' · parada '+(i+1)+' de '+stopSeq.length+'</small>'+
+        '<br><small>'+esc(dirName(dir))+'</small>'
+      );
+      marker.addTo(stopGroup);
+    });
+
+    group.addTo(leafMap);
+    if(String(dir)==='0') layerIda=group; else layerReg=group;
+  }
+
+  if(curMapDir===0||curMapDir===-1) drawDirection(0,'#2563eb');
+  if(curMapDir===1||curMapDir===-1) drawDirection(1,'#dc2626');
+  layerStops=stopGroup.addTo(leafMap);
+  var count=document.getElementById('map-stop-count');
+  if(count) count.textContent=Object.keys(stopSet).length?Object.keys(stopSet).length+' paradas únicas':'Sin paradas';
+  routeMapBounds=bounds.length?L.latLngBounds(bounds):null;
+  fitRouteMap();
+}
+
+
+function routeStopIds(routeId,serviceId){
+  var seen={};
+  (DATA.tripsByRoute[String(routeId)]||[]).filter(function(t){return String(t.service_id)===String(serviceId);}).forEach(function(t){
+    (DATA.stopTimes[t.trip_id]||[]).forEach(function(st){seen[st.stop_id]=true;});
+  });
+  return Object.keys(seen);
+}
+function departureMedianGap(departures){
+  if(!departures || departures.length<2) return null;
+  var times=departures.map(function(d){return d.departure;}).sort(function(a,b){return a-b;});
+  var gaps=[];
+  for(var i=1;i<times.length;i++){
+    var gap=(times[i]-times[i-1])/60;
+    if(gap>0 && gap<=180) gaps.push(gap);
+  }
+  return medianNumber(gaps);
+}
+function renderRouteInsights(){
+  var routeSel=document.getElementById('sel-route');
+  var serviceSel=document.getElementById('sel-service');
+  if(!routeSel||!serviceSel||!routeSel.value) return;
+  var routeId=routeSel.value, serviceId=serviceSel.value;
+  var route=DATA.routes[routeId]||{};
+  var departures=routeDepartures(routeId,serviceId,-1);
+  var durations=departures.map(function(d){return Math.max(0,(d.arrival-d.departure)/60);}).filter(function(v){return v>0;});
+  var first=departures.length?departures[0].departure:null;
+  var last=departures.length?departures.reduce(function(m,d){return Math.max(m,d.arrival);},departures[0].arrival):null;
+  var gap=departureMedianGap(departures);
+  var stops=routeStopIds(routeId,serviceId);
+  var name=document.getElementById('route-context-name');
+  var meta=document.getElementById('route-context-meta');
+  if(name) name.textContent=(route.route_short_name||route.route_id||routeId)+' · '+(route.route_long_name||'Sin nombre');
+  if(meta){
+    var operator=routeOperator(route);
+    meta.textContent=serviceLabel(serviceId)+' · '+(DATA.decoCompatible?operator:'Operador no disponible para esta publicación');
+  }
+  var wrap=document.getElementById('route-kpis');
+  if(wrap){
+    wrap.innerHTML=
+      metricCard('Salidas estimadas',departures.length.toLocaleString('es-CL'),'ambos sentidos')+
+      metricCard('Ventana operacional',first===null?'—':secsToTime(first)+'–'+secsToTime(last),'primera salida a última llegada')+
+      metricCard('Duración mediana',durations.length?Math.round(medianNumber(durations))+' min':'—','viaje completo')+
+      metricCard('Intervalo mediano',gap===null?'—':Math.round(gap)+' min','entre salidas consecutivas')+
+      metricCard('Paradas únicas',stops.length.toLocaleString('es-CL'),'en el día seleccionado');
+  }
+}
+function hourlyDepartureProfile(routeId,serviceId,dir){
+  var departures=routeDepartures(routeId,serviceId,dir);
+  var buckets=[];
+  for(var h=0;h<24;h++) buckets.push({hour:h,count:0,gaps:[],median:null});
+  var previous=null;
+  departures.forEach(function(d){
+    var hour=((Math.floor(d.departure/3600)%24)+24)%24;
+    buckets[hour].count++;
+    if(previous!==null){
+      var gap=(d.departure-previous)/60;
+      if(gap>0&&gap<=180) buckets[hour].gaps.push(gap);
+    }
+    previous=d.departure;
+  });
+  buckets.forEach(function(b){b.median=medianNumber(b.gaps);});
+  return buckets;
+}
+
+function renderAll(){
+  syncDirectionControls();
+  renderRouteInsights();
+  renderFreqs();
+  renderMap();
+  renderDeparturesTable();
+  syncSimulationFromRoute();
+  renderSimulation();
+}
+function getTrips(dir){
+  var routeId=document.getElementById('sel-route').value, svcId=document.getElementById('sel-service').value;
+  return (DATA.tripsByRoute[String(routeId)]||[]).filter(function(t){return String(t.service_id)===String(svcId) && (dir===-1||tripDir(t)===String(dir));});
+}
+function getFreqsForTrips(trips){
+  var out=[];
+  trips.forEach(function(t){
+    var arr=DATA.frequenciesByTrip && DATA.frequenciesByTrip[t.trip_id] ? DATA.frequenciesByTrip[t.trip_id] : [];
+    for(var i=0;i<arr.length;i++) out.push(arr[i]);
+  });
+  if(out.length) return out;
+  var ids={}; trips.forEach(function(t){ids[t.trip_id]=true;});
+  return DATA.frequencies.filter(function(f){return ids[f.trip_id];});
+}
+function scheduledHeadways(trips){
+  var byHour={};
+  trips.forEach(function(t){
+    var st=DATA.stopTimes[t.trip_id]; if(!st||!st.length) return;
+    var s=timeToSecs(st[0].departure_time||st[0].arrival_time||'0:00:00');
+    var h=Math.floor(s/3600); if(h<0||h>27) return;
+    if(!byHour[h]) byHour[h]=[]; byHour[h].push(s);
+  });
+  var out=[];
+  Object.keys(byHour).forEach(function(h){
+    var arr=byHour[h].sort(function(a,b){return a-b;});
+    if(arr.length===1) out.push({start_time:String(h).padStart(2,'0')+':00:00', end_time:String(Number(h)+1).padStart(2,'0')+':00:00', headway_secs:3600});
+    else {
+      var diffs=[]; for(var i=1;i<arr.length;i++) diffs.push(arr[i]-arr[i-1]);
+      var avg=Math.round(diffs.reduce(function(a,b){return a+b;},0)/diffs.length);
+      out.push({start_time:String(h).padStart(2,'0')+':00:00', end_time:String(Number(h)+1).padStart(2,'0')+':00:00', headway_secs:avg});
+    }
+  });
+  return out;
+}
+function renderFreqs(){
+  var routeId=document.getElementById('sel-route').value;
+  var serviceId=document.getElementById('sel-service').value;
+  var ida=hourlyDepartureProfile(routeId,serviceId,0);
+  var regreso=hourlyDepartureProfile(routeId,serviceId,1);
+  renderFreqTable(ida,regreso);
+  renderFreqChart(ida,regreso);
+}
+function renderFreqTable(ida,regreso){
+  var wrap=document.getElementById('freq-table-wrap');
+  var dirs=routeDirs(document.getElementById('sel-route').value,document.getElementById('sel-service').value);
+  var rows=[];
+  for(var h=0;h<24;h++){
+    var a=ida[h],b=regreso[h];
+    if((a?a.count:0)+(b?b.count:0)===0) continue;
+    var cells='<td><b>'+String(h).padStart(2,'0')+':00–'+String((h+1)%24).padStart(2,'0')+':00</b></td>';
+    if(dirs.indexOf('0')!==-1){
+      cells+='<td>'+a.count+'</td><td>'+(a.median===null?'—':'<span class="freq-pill '+freqClass(a.median)+'">'+Math.round(a.median)+' min</span>')+'</td>';
+    }
+    if(dirs.indexOf('1')!==-1){
+      cells+='<td>'+b.count+'</td><td>'+(b.median===null?'—':'<span class="freq-pill '+freqClass(b.median)+'">'+Math.round(b.median)+' min</span>')+'</td>';
+    }
+    rows.push('<tr>'+cells+'</tr>');
+  }
+  if(!rows.length){
+    wrap.innerHTML='<div class="no-data">No hay salidas programadas para este filtro.</div>';
+    return;
+  }
+  var head='<th>Franja</th>';
+  if(dirs.indexOf('0')!==-1) head+='<th>Salidas ida</th><th>Intervalo mediano</th>';
+  if(dirs.indexOf('1')!==-1) head+='<th>Salidas regreso</th><th>Intervalo mediano</th>';
+  wrap.innerHTML='<div class="tbl-wrap"><table><thead><tr>'+head+'</tr></thead><tbody>'+rows.join('')+'</tbody></table></div>';
+}
+function renderFreqChart(ida,regreso){
+  var dirs=routeDirs(document.getElementById('sel-route').value,document.getElementById('sel-service').value);
+  var labels=[];
+  for(var h=0;h<24;h++) labels.push(String(h).padStart(2,'0')+'h');
+  var datasets=[];
+  if(dirs.indexOf('0')!==-1) datasets.push({label:'Ida',data:ida.map(function(b){return b.count;}),backgroundColor:'rgba(37,99,235,.78)',borderRadius:4});
+  if(dirs.indexOf('1')!==-1) datasets.push({label:'Regreso',data:regreso.map(function(b){return b.count;}),backgroundColor:'rgba(220,38,38,.72)',borderRadius:4});
+  var canvas=document.getElementById('freq-chart');
+  if(!canvas) return;
+  if(freqChart) freqChart.destroy();
+  freqChart=new Chart(canvas.getContext('2d'),{
+    type:'bar',
+    data:{labels:labels,datasets:datasets},
+    options:{
+      responsive:true,maintainAspectRatio:false,
+      plugins:{legend:{position:'top',labels:{boxWidth:12,font:{size:11}}}},
+      scales:{
+        y:{beginAtZero:true,title:{display:true,text:'salidas'},ticks:{precision:0},grid:{color:'rgba(23,32,39,.06)'}},
+        x:{grid:{display:false},ticks:{font:{size:9},maxRotation:0}}
+      }
+    }
+  });
+}
+function setStopsDir(dir, skipRender){
+  curStopsDir=Number(dir);
+  var b0=document.getElementById('stops-btn-0'), b1=document.getElementById('stops-btn-1');
+  if(b0) b0.classList.toggle('active',curStopsDir===0); if(b1) b1.classList.toggle('active',curStopsDir===1);
+  if(!skipRender) renderStopsTable();
+}
+function tripDurationSecs(tripId){
+  var st=DATA.stopTimes[tripId]||[];
+  if(st.length<2) return 0;
+  var first=timeToSecs(st[0].departure_time||st[0].arrival_time||'0:00:00');
+  var last=timeToSecs(st[st.length-1].arrival_time||st[st.length-1].departure_time||'0:00:00');
+  return Math.max(0,last-first);
+}
+function tripStartEnd(tripId){
+  var st=DATA.stopTimes[tripId]||[];
+  if(!st.length) return null;
+  var dep=timeToSecs(st[0].departure_time||st[0].arrival_time||'0:00:00');
+  var arr=timeToSecs(st[st.length-1].arrival_time||st[st.length-1].departure_time||'0:00:00');
+  return {departure:dep, arrival:arr};
+}
+function routeDepartures(routeId, serviceId, dir){
+  var trips=(DATA.tripsByRoute[String(routeId)]||[]).filter(function(t){
+    return String(t.service_id)===String(serviceId) && (dir===-1 || tripDir(t)===String(dir));
+  });
+  var out=[], seen={};
+  trips.forEach(function(t){
+    var se=tripStartEnd(t.trip_id);
+    if(!se) return;
+    var duration=Math.max(0,se.arrival-se.departure);
+    var freqs=getFreqsForTrips([t]);
+    if(freqs.length){
+      freqs.forEach(function(f){
+        var start=timeToSecs(f.start_time), end=timeToSecs(f.end_time), step=Math.max(1,csvNum(f.headway_secs,0));
+        for(var s=start; s<end; s+=step){
+          var key=t.trip_id+'|'+s+'|'+tripDir(t);
+          if(seen[key]) continue; seen[key]=true;
+          out.push({trip:t, dir:tripDir(t), departure:s, arrival:s+duration, headsign:t.trip_headsign||'', source:'frecuencia'});
+        }
+      });
+    }else{
+      var key=t.trip_id+'|'+se.departure+'|'+tripDir(t);
+      if(!seen[key]){
+        seen[key]=true;
+        out.push({trip:t, dir:tripDir(t), departure:se.departure, arrival:se.arrival, headsign:t.trip_headsign||'', source:'programada'});
+      }
+    }
+  });
+  return out.sort(function(a,b){return a.departure-b.departure || a.arrival-b.arrival || String(a.trip.trip_id).localeCompare(String(b.trip.trip_id));});
+}
+function renderDeparturesTable(){
+  var w=document.getElementById('stops-table-wrap');
+  if(!w) return;
+  var routeId=document.getElementById('sel-route').value, svcId=document.getElementById('sel-service').value;
+  var departures=routeDepartures(routeId, svcId, curStopsDir);
+  var summary=document.getElementById('departures-summary');
+  if(summary) summary.textContent=departures.length+' salidas · '+dirName(curStopsDir)+' · '+serviceLabel(svcId);
+  if(!departures.length){w.innerHTML='<div class="no-data">Sin salidas para este recorrido, sentido y tipo de día.</div>';return;}
+  var route=DATA.routes[routeId]||{}, routeShort=route.route_short_name||route.route_id||'';
+  var rows=departures.map(function(d,i){
+    var duration=Math.max(0,d.arrival-d.departure), mins=Math.round(duration/60);
+    return '<tr><td style="color:#999;font-size:12px">'+(i+1)+'</td><td><span class="route-badge" style="background:'+rColor(route)+';color:'+rText(route)+'">'+esc(routeShort)+'</span></td><td>'+esc(dirName(d.dir))+'</td><td style="font-weight:600">'+secsToTime(d.departure)+'</td><td style="font-weight:600">'+secsToTime(d.arrival)+'</td><td>'+mins+' min</td><td>'+esc(d.headsign||'—')+'</td></tr>';
+  }).join('');
+  w.innerHTML='<div class="tbl-wrap"><table><thead><tr><th>#</th><th>Recorrido</th><th>Sentido</th><th>Sale</th><th>Llega</th><th>Duración</th><th>Destino</th></tr></thead><tbody>'+rows+'</tbody></table></div>';
+}
+function renderStopsTable(){ renderDeparturesTable(); }
+
+
+function initStopMap(){
+  if(stopLeafMap) return;
+  stopLeafMap=L.map('stop-map',{zoomControl:false,preferCanvas:true}).setView([-33.45,-70.65],15);
+  addInstitutionalTiles(stopLeafMap,19);
+  L.control.zoom({position:'topright'}).addTo(stopLeafMap);
+}
+function renderStopMap(stopId){
+  if(!stopId) return;
+  var stop=DATA.stops[stopId];
+  if(!stop||stop.stop_lat===null||stop.stop_lon===null){
+    initStopMap();
+    if(stopMarker){stopLeafMap.removeLayer(stopMarker);stopMarker=null;}
+    stopLeafMap.setView([-33.45,-70.65],11);
+    L.popup().setLatLng([-33.45,-70.65]).setContent('Este paradero no tiene coordenadas válidas en stops.txt.').openOn(stopLeafMap);
+    return;
+  }
+  initStopMap();
+  stopLeafMap.closePopup();
+  var lat=+stop.stop_lat,lon=+stop.stop_lon,name=cleanName(stop.stop_name||stopId);
+  if(stopMarker) stopLeafMap.removeLayer(stopMarker);
+  stopMarker=L.circleMarker([lat,lon],{
+    radius:11,fillColor:'#98251c',color:'#fff',weight:4,fillOpacity:1
+  }).addTo(stopLeafMap).bindPopup(
+    '<b>'+esc(name)+'</b><br><small>'+esc(stopId)+'</small><br><small>'+lat.toFixed(6)+', '+lon.toFixed(6)+'</small>'
+  );
+  stopLeafMap.setView([lat,lon],17);
+  setTimeout(function(){stopLeafMap.invalidateSize();},60);
+}
+
+function setupStopSearch(){
+  var inp=document.getElementById('stop-search'), sug=document.getElementById('suggestions');
+  inp.addEventListener('input',function(){
+    var q=inp.value.trim().toLowerCase(); if(q.length<2){sug.style.display='none';return;}
+    var results=Object.values(DATA.stopIndex).filter(function(s){return s.key.indexOf(q)!==-1;}).slice(0,14);
+    if(!results.length){sug.style.display='none';return;}
+    sug.innerHTML=results.map(function(s){ return '<div class="sug-item" onclick="selectStop(\''+esc(String(s.s.stop_id)).replace(/&#39;/g,"\\'")+'\')">'+esc(s.name)+'<small>'+esc(s.s.stop_id)+'</small></div>'; }).join('');
+    sug.style.display='block';
+  });
+  document.addEventListener('click',function(e){if(!e.target.closest('.search-wrap'))sug.style.display='none';});
+}
+function selectStop(stopId){
+  document.getElementById('suggestions').style.display='none';
+  var stop=DATA.stops[stopId]; if(!stop)return;
+  document.getElementById('stop-search').value=cleanName(stop.stop_name||stopId);
+  activeStop=stopId; updateStopServiceOptions(stopId); renderStop(stopId);
+  document.getElementById('stop-detail').style.display='block'; document.getElementById('stop-hint').style.display='none';
+}
+function computeArrivals(stopId, svcId){
+  var entries=(DATA.stopTrips[stopId]||[]).filter(function(e){ var trip=DATA.trips[e.trip_id];return trip&&trip.service_id===svcId; });
+  var arrivals=[];
+  var MAX_ARRIVALS=25000;
+  entries.forEach(function(e){
+    if(arrivals.length>=MAX_ARRIVALS) return;
+    var trip=DATA.trips[e.trip_id]; if(!trip)return;
+    var route=DATA.routes[trip.route_id], freqs=(DATA.frequenciesByTrip && DATA.frequenciesByTrip[e.trip_id]) || DATA.frequencies.filter(function(f){return f.trip_id===e.trip_id;});
+    if(freqs.length){
+      freqs.forEach(function(f){
+        if(arrivals.length>=MAX_ARRIVALS) return;
+        var startS=timeToSecs(f.start_time), endS=timeToSecs(f.end_time), hw=f.headway_secs; if(hw<=0)return;
+        for(var t=startS+e.offset;t<endS+e.offset && arrivals.length<MAX_ARRIVALS;t+=hw){
+          var h=Math.floor(t/3600);
+          if(h>=0&&h<=27) arrivals.push({timeSecs:t,timeStr:secsToTime(t),hour:h%24,headsign:trip.trip_headsign||trip.trip_short_name||'—',route:route,routeShort:route?route.route_short_name:'?',dir:tripDir(trip)});
+        }
+      });
+    } else {
+      var row=e.stopTime;
+      var t=timeToSecs(row.departure_time||row.arrival_time||'0:00:00'), h=Math.floor(t/3600);
+      if(h>=0&&h<=27) arrivals.push({timeSecs:t,timeStr:secsToTime(t),hour:h%24,headsign:trip.trip_headsign||trip.trip_short_name||'—',route:route,routeShort:route?route.route_short_name:'?',dir:tripDir(trip)});
+    }
+  });
+  arrivals.sort(function(a,b){return a.timeSecs-b.timeSecs;});
+  return arrivals;
+}
+function renderStop(stopId){
+  var stop=DATA.stops[stopId]||{};
+  var svcId=document.getElementById('sel-service-stop').value;
+  var name=cleanName(stop.stop_name||stopId);
+  var level=stop.level_id&&DATA.levels[stop.level_id]?DATA.levels[stop.level_id].level_name:'';
+  var pathCount=(DATA.pathwaysByStop[stopId]||[]).length;
+  var meta=esc(stopId)+(stop.stop_lat!==null?' &nbsp;·&nbsp; '+(+stop.stop_lat).toFixed(5)+', '+(+stop.stop_lon).toFixed(5):'')+
+    (level?' &nbsp;·&nbsp; '+esc(level):'')+(pathCount?' &nbsp;·&nbsp; '+pathCount+' conexiones internas':'');
+  document.getElementById('stop-header-info').innerHTML=
+    '<div class="stop-pin">●</div><div><div class="stop-name-big">'+esc(name)+'</div><div class="stop-id-small">'+meta+'</div></div>';
+
+  renderStopMap(stopId);
+  var opFilter=document.getElementById('sel-operator-stop').value;
+  var entries=(DATA.stopTrips[stopId]||[]).filter(function(e){
+    var t=DATA.trips[e.trip_id],r=t?DATA.routes[t.route_id]:null;
+    return t&&t.service_id===svcId&&routeMatchesOperator(r,opFilter);
+  });
+
+  _cachedArrivals=computeArrivals(stopId,svcId).filter(function(a){return routeMatchesOperator(a.route,opFilter);});
+  var routeMap={};
+  _cachedArrivals.forEach(function(a){
+    var rid=a.route&&a.route.route_id?String(a.route.route_id):String(a.routeShort||'?');
+    if(!routeMap[rid]) routeMap[rid]={route:a.route,headsigns:{},dirs:{},count:0};
+    routeMap[rid].count++;
+    if(a.headsign) routeMap[rid].headsigns[a.headsign]=true;
+    routeMap[rid].dirs[dirName(a.dir)]=true;
+  });
+
+  var hourly=[];
+  for(var h=0;h<24;h++) hourly.push(_cachedArrivals.filter(function(a){return a.hour===h;}).length);
+  var peakCount=Math.max.apply(null,[0].concat(hourly));
+  var peakHour=hourly.indexOf(peakCount);
+  var first=_cachedArrivals.length?_cachedArrivals[0].timeSecs:null;
+  var last=_cachedArrivals.length?_cachedArrivals[_cachedArrivals.length-1].timeSecs:null;
+  var kpis=document.getElementById('stop-kpis');
+  if(kpis){
+    kpis.innerHTML=
+      metricCard('Recorridos',Object.keys(routeMap).length.toLocaleString('es-CL'),'servicios distintos')+
+      metricCard('Llegadas estimadas',_cachedArrivals.length.toLocaleString('es-CL'),serviceLabel(svcId))+
+      metricCard('Hora punta',peakCount?String(peakHour).padStart(2,'0')+':00':'—',peakCount?peakCount+' llegadas':'sin programación')+
+      metricCard('Ventana de atención',first===null?'—':secsToTime(first)+'–'+secsToTime(last),'primera a última llegada');
+  }
+
+  if(!entries.length||!_cachedArrivals.length){
+    document.getElementById('routes-at-stop-wrap').innerHTML='<div class="no-data">Sin recorridos para este tipo de día.</div>';
+    document.getElementById('arrivals-wrap').innerHTML='<div class="no-data">Sin llegadas programadas.</div>';
+    renderStopChart([]);
+    return;
+  }
+
+  var routesSorted=Object.values(routeMap).sort(function(a,b){
+    return b.count-a.count||String(a.route?a.route.route_short_name:'').localeCompare(String(b.route?b.route.route_short_name:''),undefined,{numeric:true});
+  });
+  var showOperator=DATA.decoCompatible;
+  var tableRows=routesSorted.map(function(rm){
+    var r=rm.route,bg=rColor(r),tc=rText(r),hs=Object.keys(rm.headsigns).slice(0,3).join(' / ')||'—';
+    var cells='<td><span class="route-badge" style="background:'+bg+';color:'+tc+'">'+esc(r?r.route_short_name:'?')+'</span></td>';
+    if(showOperator) cells+='<td>'+esc(routeOperator(r))+'</td>';
+    cells+='<td>'+esc(Object.keys(rm.dirs).join(' / '))+'</td><td>'+esc(hs)+'</td><td><b>'+rm.count+'</b></td>';
+    return '<tr>'+cells+'</tr>';
+  }).join('');
+  var head='<th>Ruta</th>'+(showOperator?'<th>Operador</th>':'')+'<th>Sentido</th><th>Destino</th><th>Llegadas/día</th>';
+  document.getElementById('routes-at-stop-wrap').innerHTML='<div class="tbl-wrap"><table><thead><tr>'+head+'</tr></thead><tbody>'+tableRows+'</tbody></table></div>';
+  renderStopChart(_cachedArrivals);
+  renderArrivals(_cachedArrivals);
+}
+function renderStopChart(arrivals){
+  var labels=[],values=[];
+  for(var h=0;h<24;h++){
+    labels.push(String(h).padStart(2,'0')+'h');
+    values.push(arrivals.filter(function(a){return a.hour===h;}).length);
+  }
+  var canvas=document.getElementById('stop-chart');
+  if(!canvas) return;
+  if(stopChart) stopChart.destroy();
+  stopChart=new Chart(canvas.getContext('2d'),{
+    type:'line',
+    data:{labels:labels,datasets:[{
+      label:'Llegadas',data:values,borderColor:'rgba(152,37,28,.9)',backgroundColor:'rgba(152,37,28,.1)',
+      fill:true,tension:.25,pointRadius:2,pointHoverRadius:4,borderWidth:2
+    }]},
+    options:{
+      responsive:true,maintainAspectRatio:false,
+      plugins:{legend:{display:false}},
+      scales:{
+        y:{beginAtZero:true,title:{display:true,text:'llegadas'},ticks:{precision:0},grid:{color:'rgba(23,32,39,.06)'}},
+        x:{grid:{display:false},ticks:{font:{size:9},maxRotation:0}}
+      }
+    }
+  });
+}
+function renderArrivals(arrivals){
+  var hour=selectedHour%24;
+  var filtered=arrivals.filter(function(a){return a.hour===hour;});
+  document.getElementById('arrivals-title').textContent='Llegadas entre '+String(hour).padStart(2,'0')+':00 y '+String((hour+1)%24).padStart(2,'0')+':00 · '+filtered.length;
+  var wrap=document.getElementById('arrivals-wrap');
+  if(!filtered.length){
+    wrap.innerHTML='<div class="no-data">No hay buses programados en esta franja.</div>';
+    return;
+  }
+  var show=filtered.slice(0,180),showOperator=DATA.decoCompatible;
+  var rows=show.map(function(a){
+    var bg=rColor(a.route),tc=rText(a.route);
+    var cells='<td><b>'+a.timeStr+'</b></td><td><span class="route-badge" style="background:'+bg+';color:'+tc+'">'+esc(a.routeShort)+'</span></td>';
+    if(showOperator) cells+='<td>'+esc(routeOperator(a.route))+'</td>';
+    cells+='<td>'+esc(dirName(a.dir))+'</td><td>'+esc(a.headsign)+'</td>';
+    return '<tr>'+cells+'</tr>';
+  }).join('');
+  var columns=showOperator?5:4;
+  var more=filtered.length>show.length?'<tr><td colspan="'+columns+'" class="no-data">… y '+(filtered.length-show.length)+' llegadas adicionales</td></tr>':'';
+  var head='<th>Hora</th><th>Ruta</th>'+(showOperator?'<th>Operador</th>':'')+'<th>Sentido</th><th>Destino</th>';
+  wrap.innerHTML='<div class="tbl-wrap"><table><thead><tr>'+head+'</tr></thead><tbody>'+rows+more+'</tbody></table></div>';
+}
+function onHourSlide(v){
+  selectedHour=parseInt(v,10)||0;
+  document.getElementById('hour-val').textContent=String(selectedHour%24).padStart(2,'0')+':00';
+  renderArrivals(_cachedArrivals);
+}
+
+
+
+
+async function parseGTFSForCompare(file){
+  var zip = await JSZip.loadAsync(file);
+  async function readTxt(name){ var f=zip.file(name); return f?await f.async('string'):''; }
+  function parse(txt){ return txt ? Papa.parse(txt.trim(),{header:true,skipEmptyLines:true,dynamicTyping:false}).data : []; }
+  var out={routes:{},routesByShort:{},trips:{},tripsByRoute:{},stops:{},stopTimes:{},frequencies:[],calendar:{},serviceIds:[]};
+  parse(await readTxt('calendar.txt')).forEach(function(c){ if(c.service_id) out.calendar[String(c.service_id)]=c; });
+  parse(await readTxt('routes.txt')).forEach(function(r){
+    var rid=String(r.route_id||''); if(!rid) return; r.route_id=rid; out.routes[rid]=r;
+    var key=normalizeRouteCode(r.route_short_name||rid); if(key && !out.routesByShort[key]) out.routesByShort[key]=r;
+  });
+  parse(await readTxt('trips.txt')).forEach(function(t){
+    var tid=String(t.trip_id||''); if(!tid) return;
+    t.trip_id=tid; t.route_id=String(t.route_id||''); t.service_id=String(t.service_id||''); t.direction_id=String(t.direction_id==null||t.direction_id===''?0:t.direction_id);
+    out.trips[tid]=t;
+    if(!out.tripsByRoute[t.route_id]) out.tripsByRoute[t.route_id]=[];
+    out.tripsByRoute[t.route_id].push(t);
+  });
+  parse(await readTxt('stops.txt')).forEach(function(st){
+    var sid=String(st.stop_id||''); if(!sid) return;
+    st.stop_id=sid; st.stop_lat=csvNum(st.stop_lat,null); st.stop_lon=csvNum(st.stop_lon,null); out.stops[sid]=st;
+  });
+  parse(await readTxt('stop_times.txt')).forEach(function(row){
+    var tid=String(row.trip_id||''); if(!tid) return;
+    row.trip_id=tid; row.stop_id=String(row.stop_id||''); row.stop_sequence=csvNum(row.stop_sequence);
+    if(!out.stopTimes[tid]) out.stopTimes[tid]=[];
+    out.stopTimes[tid].push(row);
+  });
+  Object.keys(out.stopTimes).forEach(function(tid){ out.stopTimes[tid].sort(function(a,b){return a.stop_sequence-b.stop_sequence;}); });
+  out.frequencies=parse(await readTxt('frequencies.txt')).map(function(f){
+    f.trip_id=String(f.trip_id||''); f.headway_secs=csvNum(f.headway_secs); f.start_time=String(f.start_time||''); f.end_time=String(f.end_time||''); return f;
+  });
+  out.serviceIds=unique(Object.values(out.trips).map(function(t){return t.service_id;})).sort(sortServices);
+  return out;
+}
+function currentGTFSForCompare(){
+  var out={routes:DATA.routes,routesByShort:{},trips:DATA.trips,tripsByRoute:DATA.tripsByRoute,stops:DATA.stops,stopTimes:DATA.stopTimes,frequencies:DATA.frequencies,calendar:DATA.calendar,serviceIds:DATA.serviceIds};
+  Object.values(DATA.routes).forEach(function(r){ var key=normalizeRouteCode(r.route_short_name||r.route_id); if(key && !out.routesByShort[key]) out.routesByShort[key]=r; });
+  return out;
+}
+function normalizeRouteCode(v){ return String(v||'').trim().replace(/\s+/g,'').replace(/\.0+$/,'').toLowerCase(); }
+function displayRouteCode(route, key){ return route ? String(route.route_short_name||route.route_id||key) : String(key||'—'); }
+function routeLong(route){ return route ? String(route.route_long_name||'') : ''; }
+function serviceLabelForFeed(feed, sid){
+  if(SVC[sid]) return SVC[sid];
+  var c = feed.calendar ? feed.calendar[sid] : null;
+  if(c){
+    var flags = ['monday','tuesday','wednesday','thursday','friday','saturday','sunday'].map(function(k){return String(c[k])==='1'||c[k]===1;});
+    var active = flags.map(function(v,i){return v?DAY_NAMES[i]:null;}).filter(Boolean);
+    if(active.length===5 && flags.slice(0,5).every(Boolean) && !flags[5] && !flags[6]) return 'Lunes a Viernes';
+    if(active.length===7) return 'Todos los días';
+    if(active.length) return active.join(', ');
+  }
+  return sid || '—';
+}
+function stopNameForFeed(feed, stopId){ var st=feed.stops[stopId]||{}; return cleanName(st.stop_name||stopId); }
+function routeTrips(feed, route){ return route ? (feed.tripsByRoute[String(route.route_id)]||[]) : []; }
+function routeTripsCount(feed, route){ return routeTrips(feed,route).length; }
+function routeServicesForFeed(feed, route){ return unique(routeTrips(feed,route).map(function(t){return t.service_id;})).sort(sortServices); }
+function routeDirsForFeed(feed, route){ return unique(routeTrips(feed,route).map(function(t){return tripDir(t);})).sort(); }
+function routeStopSeqsByDir(feed, route){
+  var out={};
+  routeTrips(feed,route).forEach(function(t){
+    var d=tripDir(t);
+    if(out[d]) return;
+    var st=feed.stopTimes[t.trip_id]||[];
+    if(st.length) out[d]=st.map(function(x){return x.stop_id;});
+  });
+  return out;
+}
+function routeStopSignature(feed, route){
+  var byDir=routeStopSeqsByDir(feed,route);
+  return Object.keys(byDir).sort().map(function(k){return k+':'+byDir[k].join('>');}).join('|');
+}
+function avgHeadwayForRoute(feed, route){
+  if(!route) return null;
+  var trips=routeTrips(feed,route), ids={}; trips.forEach(function(t){ids[t.trip_id]=true;});
+  var freqs=(feed.frequencies||[]).filter(function(f){return ids[f.trip_id]&&f.headway_secs>0;});
+  if(freqs.length) return Math.round(freqs.reduce(function(a,f){return a+f.headway_secs;},0)/freqs.length/60);
+  var starts=[]; trips.forEach(function(t){ var st=feed.stopTimes[t.trip_id]; if(st&&st.length) starts.push(timeToSecs(st[0].departure_time||st[0].arrival_time||'0:00:00')); });
+  starts.sort(function(a,b){return a-b;}); if(starts.length<2) return null;
+  var diffs=[]; for(var i=1;i<starts.length;i++){ if(starts[i]-starts[i-1]>0) diffs.push(starts[i]-starts[i-1]); }
+  return diffs.length?Math.round(diffs.reduce(function(a,b){return a+b;},0)/diffs.length/60):null;
+}
+function stopDeltaDetails(oldFeed, newFeed, oldR, newR){
+  var oldSeqs=routeStopSeqsByDir(oldFeed,oldR), newSeqs=routeStopSeqsByDir(newFeed,newR), details=[];
+  var dirs=unique(Object.keys(oldSeqs).concat(Object.keys(newSeqs))).sort();
+  dirs.forEach(function(d){
+    var oldSeq=(oldSeqs[d]||[]).filter(isComparableStopId);
+    var newSeq=(newSeqs[d]||[]).filter(isComparableStopId);
+    if(oldSeq.join('>')===newSeq.join('>')) return;
+    var oldSet={}, newSet={}; oldSeq.forEach(function(x){oldSet[x]=true;}); newSeq.forEach(function(x){newSet[x]=true;});
+    var added=newSeq.filter(function(x){return !oldSet[x];}).length;
+    var removed=oldSeq.filter(function(x){return !newSet[x];}).length;
+    var oldFirst=oldSeq.length?stopNameForFeed(oldFeed,oldSeq[0]):'—';
+    var newFirst=newSeq.length?stopNameForFeed(newFeed,newSeq[0]):'—';
+    var oldLast=oldSeq.length?stopNameForFeed(oldFeed,oldSeq[oldSeq.length-1]):'—';
+    var newLast=newSeq.length?stopNameForFeed(newFeed,newSeq[newSeq.length-1]):'—';
+    var txt=dirName(d)+': '+oldSeq.length+' → '+newSeq.length+' paraderos PA–PJ con 1 a 4 dígitos';
+    if(added||removed) txt+=' ('+added+' nuevos, '+removed+' eliminados)';
+    if(oldFirst!==newFirst || oldLast!==newLast) txt+='; inicio '+oldFirst+' → '+newFirst+'; término '+oldLast+' → '+newLast;
+    details.push(txt);
+  });
+  return details;
+}
+
+function routeStopDeltaMetrics(oldFeed, newFeed, oldR, newR){
+  var oldSeqs=routeStopSeqsByDir(oldFeed,oldR), newSeqs=routeStopSeqsByDir(newFeed,newR);
+  var dirs=unique(Object.keys(oldSeqs).concat(Object.keys(newSeqs))).sort();
+  var result={added:0,removed:0,reordered:0,directionsChanged:0};
+  dirs.forEach(function(d){
+    var oldSeq=(oldSeqs[d]||[]).filter(isComparableStopId);
+    var newSeq=(newSeqs[d]||[]).filter(isComparableStopId);
+    if(oldSeq.join('>')===newSeq.join('>')) return;
+    result.directionsChanged++;
+    var oldSet={}, newSet={};
+    oldSeq.forEach(function(x){oldSet[x]=true;});
+    newSeq.forEach(function(x){newSet[x]=true;});
+    var added=newSeq.filter(function(x){return !oldSet[x];}).length;
+    var removed=oldSeq.filter(function(x){return !newSet[x];}).length;
+    result.added+=added;
+    result.removed+=removed;
+    if(oldSeq.length===newSeq.length && added===0 && removed===0) result.reordered++;
+  });
+  return result;
+}
+function pctDelta(oldValue,newValue){
+  if(!oldValue) return newValue===oldValue?0:null;
+  return ((newValue-oldValue)/oldValue)*100;
+}
+function compareChangeProfile(oldFeed,newFeed,oldR,newR,oldTrips,newTrips,oldHw,newHw){
+  var stopMetrics=routeStopDeltaMetrics(oldFeed,newFeed,oldR,newR);
+  var oldSvc=routeServicesForFeed(oldFeed,oldR), newSvc=routeServicesForFeed(newFeed,newR);
+  var oldDirs=routeDirsForFeed(oldFeed,oldR), newDirs=routeDirsForFeed(newFeed,newR);
+  var metadataChanged=routeLong(oldR)!==routeLong(newR) || String(oldR.route_color||'')!==String(newR.route_color||'');
+  var serviceChanged=oldSvc.join('|')!==newSvc.join('|') || oldDirs.join('|')!==newDirs.join('|');
+  var tripPct=pctDelta(oldTrips,newTrips);
+  var freqPct=(oldHw!==null && newHw!==null)?pctDelta(oldHw,newHw):null;
+  var types=[];
+  if(stopMetrics.added || stopMetrics.removed || stopMetrics.reordered || stopMetrics.directionsChanged) types.push('stops');
+  if(oldTrips!==newTrips) types.push('trips');
+  if(oldHw!==null && newHw!==null && oldHw!==newHw) types.push('frequency');
+  if(serviceChanged) types.push('service');
+  if(metadataChanged) types.push('metadata');
+  var score=(stopMetrics.added+stopMetrics.removed)*2 +
+    (stopMetrics.reordered?3:0) +
+    (tripPct===null?0:Math.abs(tripPct)/10) +
+    (freqPct===null?0:Math.abs(freqPct)/10) +
+    (serviceChanged?2:0) +
+    (metadataChanged?1:0);
+  score=Math.round(score*10)/10;
+  return {
+    stopMetrics:stopMetrics,
+    tripDelta:newTrips-oldTrips,
+    tripPct:tripPct,
+    headwayDelta:(oldHw!==null && newHw!==null)?newHw-oldHw:null,
+    freqPct:freqPct,
+    types:types,
+    score:score,
+    impact:score>=12?'Alto':score>=5?'Medio':'Bajo'
+  };
+}
+function isComparableStopId(id){
+  return /^P[A-J]\d{1,4}$/.test(String(id||'').trim());
+}
+function signedNumber(value,suffix){
+  if(value===null || value===undefined || isNaN(value)) return '—';
+  var rounded=Math.round(value*10)/10;
+  return (rounded>0?'+':'')+rounded+(suffix||'');
+}
+
+function routeChangeDetails(oldFeed, newFeed, oldR, newR){
+  var details=[];
+  if(routeLong(oldR)!==routeLong(newR)) details.push('Nombre largo: '+(routeLong(oldR)||'—')+' → '+(routeLong(newR)||'—'));
+  if(String(oldR.route_color||'')!==String(newR.route_color||'')) details.push('Color: '+(oldR.route_color||'—')+' → '+(newR.route_color||'—'));
+  var oldTrips=routeTripsCount(oldFeed,oldR), newTrips=routeTripsCount(newFeed,newR);
+  if(oldTrips!==newTrips) details.push('Viajes diarios/base: '+oldTrips+' → '+newTrips+' ('+(newTrips-oldTrips>0?'+':'')+(newTrips-oldTrips)+')');
+  var oldSvc=routeServicesForFeed(oldFeed,oldR), newSvc=routeServicesForFeed(newFeed,newR);
+  if(oldSvc.join('|')!==newSvc.join('|')) details.push('Tipos de día: '+oldSvc.map(function(s){return serviceLabelForFeed(oldFeed,s);}).join(', ')+' → '+newSvc.map(function(s){return serviceLabelForFeed(newFeed,s);}).join(', '));
+  var oldDirs=routeDirsForFeed(oldFeed,oldR).map(dirName), newDirs=routeDirsForFeed(newFeed,newR).map(dirName);
+  if(oldDirs.join('|')!==newDirs.join('|')) details.push('Sentidos: '+oldDirs.join(', ')+' → '+newDirs.join(', '));
+  details=details.concat(stopDeltaDetails(oldFeed,newFeed,oldR,newR));
+  var oldHw=avgHeadwayForRoute(oldFeed,oldR), newHw=avgHeadwayForRoute(newFeed,newR);
+  if(oldHw!==null && newHw!==null && Math.abs(newHw-oldHw)>=1) details.push('Frecuencia promedio general: '+oldHw+' → '+newHw+' min');
+  return details;
+}
+function frequencyProfile(feed){
+  var byTrip={};
+  Object.values(feed.trips).forEach(function(t){ byTrip[t.trip_id]=t; });
+  var grouped={};
+  (feed.frequencies||[]).forEach(function(f){
+    var t=byTrip[f.trip_id]; if(!t || !f.headway_secs) return;
+    var r=feed.routes[t.route_id]; if(!r) return;
+    var rKey=normalizeRouteCode(r.route_short_name||r.route_id);
+    var key=[rKey,t.service_id,tripDir(t),String(f.start_time||''),String(f.end_time||'')].join('|');
+    if(!grouped[key]) grouped[key]={routeKey:rKey,route:r,serviceId:t.service_id,dir:tripDir(t),start:f.start_time,end:f.end_time,total:0,count:0};
+    grouped[key].total+=f.headway_secs; grouped[key].count++;
+  });
+  var out={};
+  Object.keys(grouped).forEach(function(k){ var g=grouped[k]; g.headwayMin=Math.round((g.total/g.count)/60); out[k]=g; });
+  return out;
+}
+function compareFrequencyWindows(oldFeed,newFeed){
+  var oldP=frequencyProfile(oldFeed), newP=frequencyProfile(newFeed), changes=[];
+  Object.keys(newP).forEach(function(k){
+    if(!oldP[k]) return;
+    var oldH=oldP[k].headwayMin, newH=newP[k].headwayMin;
+    if(oldH!==newH) changes.push({key:k, routeKey:newP[k].routeKey, route:newP[k].route, serviceId:newP[k].serviceId, day:serviceLabelForFeed(newFeed,newP[k].serviceId), dir:newP[k].dir, start:newP[k].start, end:newP[k].end, oldHw:oldH, newHw:newH, delta:newH-oldH});
+  });
+  changes.sort(function(a,b){return Math.abs(b.delta)-Math.abs(a.delta);});
+  return changes;
+}
+function compareFeeds(oldFeed, newFeed){
+  var oldKeys=Object.keys(oldFeed.routesByShort), newKeys=Object.keys(newFeed.routesByShort);
+  var oldSet={},newSet={}; oldKeys.forEach(function(k){oldSet[k]=true;}); newKeys.forEach(function(k){newSet[k]=true;});
+  var created=newKeys.filter(function(k){return !oldSet[k];}).sort(function(a,b){return a.localeCompare(b,undefined,{numeric:true});});
+  var deleted=oldKeys.filter(function(k){return !newSet[k];}).sort(function(a,b){return a.localeCompare(b,undefined,{numeric:true});});
+  var common=newKeys.filter(function(k){return oldSet[k];}).sort(function(a,b){return a.localeCompare(b,undefined,{numeric:true});});
+  var freqChanges=compareFrequencyWindows(oldFeed,newFeed);
+  var freqByRoute={};
+  freqChanges.forEach(function(f){
+    if(!freqByRoute[f.routeKey]) freqByRoute[f.routeKey]=[];
+    freqByRoute[f.routeKey].push(f);
+  });
+  var modified=[];
+  common.forEach(function(k){
+    var oldR=oldFeed.routesByShort[k], newR=newFeed.routesByShort[k];
+    var details=routeChangeDetails(oldFeed,newFeed,oldR,newR);
+    var routeFreq=freqByRoute[k]||[];
+    if(routeFreq.length){
+      var maxFreq=Math.max.apply(null,routeFreq.map(function(f){return Math.abs(f.delta);}));
+      details.push('Frecuencia por franja: '+routeFreq.length+' ventana(s) cambiada(s), máximo '+maxFreq+' min');
+    }
+    if(details.length){
+      var oldTrips=routeTripsCount(oldFeed,oldR), newTrips=routeTripsCount(newFeed,newR);
+      var oldHw=avgHeadwayForRoute(oldFeed,oldR), newHw=avgHeadwayForRoute(newFeed,newR);
+      var profile=compareChangeProfile(oldFeed,newFeed,oldR,newR,oldTrips,newTrips,oldHw,newHw);
+      if(routeFreq.length && profile.types.indexOf('frequency')===-1) profile.types.push('frequency');
+      if(routeFreq.length){
+        profile.freqWindowCount=routeFreq.length;
+        profile.maxWindowDelta=Math.max.apply(null,routeFreq.map(function(f){return Math.abs(f.delta);}));
+        profile.score=Math.round((profile.score+profile.maxWindowDelta+Math.min(5,routeFreq.length/2))*10)/10;
+        profile.impact=profile.score>=12?'Alto':profile.score>=5?'Medio':'Bajo';
+      }
+      modified.push({
+        key:k,
+        oldRoute:oldR,
+        route:newR,
+        details:details,
+        oldTrips:oldTrips,
+        newTrips:newTrips,
+        oldHw:oldHw,
+        newHw:newHw,
+        profile:profile
+      });
+    }
+  });
+  var oldStops={}, newStops={};
+  Object.keys(oldFeed.stops).filter(isComparableStopId).forEach(function(k){oldStops[k]=true;});
+  Object.keys(newFeed.stops).filter(isComparableStopId).forEach(function(k){newStops[k]=true;});
+  var stopsCreated=Object.keys(newStops).filter(function(k){return !oldStops[k];}).sort(function(a,b){return a.localeCompare(b,undefined,{numeric:true});});
+  var stopsDeleted=Object.keys(oldStops).filter(function(k){return !newStops[k];}).sort(function(a,b){return a.localeCompare(b,undefined,{numeric:true});});
+  return {created:created,deleted:deleted,modified:modified,freqChanges:freqChanges,stopsCreated:stopsCreated,stopsDeleted:stopsDeleted};
+}
+function tableFromRows(headers, rows){
+  if(!rows.length) return '<div class="no-data">Sin cambios detectados</div>';
+  return '<div class="tbl-wrap"><table><thead><tr>'+headers.map(function(h){return '<th>'+esc(h)+'</th>';}).join('')+'</tr></thead><tbody>'+rows.join('')+'</tbody></table></div>';
+}
+
+var COMPARE_STATE={cmp:null,oldFeed:null,newFeed:null};
+
+function frequencyChangesByRoute(changes){
+  var grouped={};
+  (changes||[]).forEach(function(f){
+    var key=f.routeKey;
+    if(!grouped[key]) grouped[key]={routeKey:key,route:f.route,items:[],improvements:0,worsenings:0,totalDelta:0,maxAbsDelta:0};
+    var g=grouped[key];
+    g.items.push(f);
+    g.totalDelta+=f.delta;
+    g.maxAbsDelta=Math.max(g.maxAbsDelta,Math.abs(f.delta));
+    if(f.delta<0) g.improvements++; else if(f.delta>0) g.worsenings++;
+  });
+  return Object.keys(grouped).map(function(k){
+    var g=grouped[k];
+    g.avgDelta=g.items.length?g.totalDelta/g.items.length:0;
+    g.trend=g.improvements && g.worsenings?'Mixto':g.improvements?'Mejora':'Empeora';
+    g.score=g.maxAbsDelta*2+g.items.length;
+    return g;
+  });
+}
+function impactClass(impact){
+  return impact==='Alto'?'compare-impact-high':impact==='Medio'?'compare-impact-mid':'compare-impact-low';
+}
+function typeLabel(type){
+  return ({stops:'Trazado',frequency:'Frecuencia',trips:'Viajes',service:'Días/sentidos',metadata:'Datos'})[type]||type;
+}
+function formatPct(value){
+  return value===null || value===undefined || isNaN(value)?'—':signedNumber(value,'%');
+}
+function renderCompareAnalysis(){
+  var state=COMPARE_STATE, cmp=state.cmp;
+  if(!cmp) return;
+  var searchEl=document.getElementById('compare-route-search');
+  var filterEl=document.getElementById('compare-change-filter');
+  var sortEl=document.getElementById('compare-sort');
+  var q=normalizeRouteCode(searchEl?searchEl.value:'');
+  var filter=filterEl?filterEl.value:'all';
+  var sort=sortEl?sortEl.value:'impact';
+  var rows=cmp.modified.filter(function(m){
+    var hay=normalizeRouteCode(displayRouteCode(m.route,m.key)+' '+routeLong(m.route));
+    if(q && hay.indexOf(q)===-1) return false;
+    return filter==='all' || m.profile.types.indexOf(filter)!==-1;
+  });
+  rows.sort(function(a,b){
+    if(sort==='route') return displayRouteCode(a.route,a.key).localeCompare(displayRouteCode(b.route,b.key),undefined,{numeric:true});
+    if(sort==='frequency') return Math.abs(b.profile.headwayDelta||0)-Math.abs(a.profile.headwayDelta||0) || b.profile.score-a.profile.score;
+    if(sort==='trips') return Math.abs(b.profile.tripDelta||0)-Math.abs(a.profile.tripDelta||0) || b.profile.score-a.profile.score;
+    return b.profile.score-a.profile.score || displayRouteCode(a.route,a.key).localeCompare(displayRouteCode(b.route,b.key),undefined,{numeric:true});
+  });
+  document.getElementById('routes-modified-wrap').innerHTML=tableFromRows(
+    ['Ruta','Impacto','Δ viajes','Δ frecuencia','Paraderos','Análisis'],
+    rows.slice(0,150).map(function(m){
+      var p=m.profile, sm=p.stopMetrics;
+      var tags=p.types.map(function(t){return '<span class="operator-chip">'+esc(typeLabel(t))+'</span>';}).join(' ');
+      var detail='<details class="compare-detail"><summary>Ver '+m.details.length+' cambios</summary><ul>'+
+        m.details.map(function(d){return '<li>'+esc(d)+'</li>';}).join('')+
+        '</ul><div class="param-sheet-note">Índice: '+p.score+' · Viajes '+formatPct(p.tripPct)+' · Frecuencia '+formatPct(p.freqPct)+'</div></details>';
+      return '<tr>'+
+        '<td><b>'+esc(displayRouteCode(m.route,m.key))+'</b><br><small>'+esc(routeLong(m.route)||'—')+'</small><br>'+tags+'</td>'+
+        '<td><span class="compare-impact '+impactClass(p.impact)+'">'+p.impact+' · '+p.score+'</span></td>'+
+        '<td class="compare-metric">'+signedNumber(p.tripDelta,'')+'<br><small>'+formatPct(p.tripPct)+'</small></td>'+
+        '<td class="compare-metric">'+signedNumber(p.headwayDelta,' min')+'<br><small>'+formatPct(p.freqPct)+'</small></td>'+
+        '<td class="compare-metric">+'+sm.added+' / −'+sm.removed+(sm.reordered?'<br><small>'+sm.reordered+' reordenado(s)</small>':'')+'</td>'+
+        '<td>'+detail+'</td>'+
+      '</tr>';
+    })
+  );
+  var freqRows=frequencyChangesByRoute(cmp.freqChanges).filter(function(g){
+    if(!q) return true;
+    return normalizeRouteCode(displayRouteCode(g.route,g.routeKey)+' '+routeLong(g.route)).indexOf(q)!==-1;
+  });
+  freqRows.sort(function(a,b){return b.score-a.score || displayRouteCode(a.route,a.routeKey).localeCompare(displayRouteCode(b.route,b.routeKey),undefined,{numeric:true});});
+  document.getElementById('freq-changes-wrap').innerHTML=tableFromRows(
+    ['Ruta','Ventanas','Tendencia','Δ promedio','Máximo cambio','Detalle'],
+    freqRows.slice(0,120).map(function(g){
+      var trendClass=g.trend==='Mejora'?'delta-up':g.trend==='Empeora'?'delta-down':'delta-neutral';
+      var detail='<details class="compare-detail"><summary>Ver franjas</summary><ul>'+
+        g.items.slice(0,30).map(function(f){
+          return '<li>'+esc(f.day)+' · '+esc(dirName(f.dir))+' · '+esc(String(f.start).slice(0,5))+'–'+esc(String(f.end).slice(0,5))+': '+f.oldHw+' → '+f.newHw+' min ('+signedNumber(f.delta,' min')+')</li>';
+        }).join('')+
+        '</ul></details>';
+      return '<tr><td><b>'+esc(displayRouteCode(g.route,g.routeKey))+'</b><br><small>'+esc(routeLong(g.route)||'—')+'</small></td>'+
+        '<td>'+g.items.length+'</td><td class="'+trendClass+'">'+g.trend+'<br><small>'+g.improvements+' mejora(s), '+g.worsenings+' empeora(s)</small></td>'+
+        '<td class="compare-metric">'+signedNumber(g.avgDelta,' min')+'</td><td class="compare-metric">'+g.maxAbsDelta+' min</td><td>'+detail+'</td></tr>';
+    })
+  );
+  var note=document.getElementById('compare-analysis-note');
+  if(note){
+    note.textContent='Mostrando '+rows.length+' de '+cmp.modified.length+' recorridos modificados. El índice de impacto pondera paraderos, variación porcentual de viajes y frecuencia, cambios de días/sentidos y datos de ruta; sirve para priorizar revisión y no es un KPI oficial.';
+  }
+}
+
+function renderCompare(cmp, oldFeed, newFeed){
+  COMPARE_STATE={cmp:cmp,oldFeed:oldFeed,newFeed:newFeed};
+  document.getElementById('compare-results').style.display='block';
+  document.getElementById('compare-hint').style.display='none';
+  var freqGroups=frequencyChangesByRoute(cmp.freqChanges);
+  var improved=freqGroups.filter(function(g){return g.trend==='Mejora';}).length;
+  var worsened=freqGroups.filter(function(g){return g.trend==='Empeora';}).length;
+  document.getElementById('compare-summary').innerHTML=[
+    ['Rutas creadas',cmp.created.length],
+    ['Rutas eliminadas',cmp.deleted.length],
+    ['Rutas modificadas',cmp.modified.length],
+    ['Paraderos nuevos PA–PJ válidos',cmp.stopsCreated.length],
+    ['Paraderos eliminados PA–PJ válidos',cmp.stopsDeleted.length],
+    ['Rutas con cambios de frecuencia',freqGroups.length],
+    ['Frecuencia mejora',improved],
+    ['Frecuencia empeora',worsened]
+  ].map(function(x){return '<div class="stat-card"><div class="lbl">'+x[0]+'</div><div class="val">'+x[1]+'</div></div>';}).join('');
+  document.getElementById('routes-created-wrap').innerHTML=tableFromRows(['Ruta','Nombre','Viajes','Tipos de día','Frecuencia prom.'], cmp.created.map(function(k){
+    var r=newFeed.routesByShort[k], hw=avgHeadwayForRoute(newFeed,r);
+    return '<tr><td><b>'+esc(displayRouteCode(r,k))+'</b></td><td>'+esc(routeLong(r))+'</td><td>'+routeTripsCount(newFeed,r)+'</td><td>'+routeServicesForFeed(newFeed,r).map(function(s){return serviceLabelForFeed(newFeed,s);}).join(', ')+'</td><td>'+(hw?hw+' min':'—')+'</td></tr>';
+  }));
+  document.getElementById('routes-deleted-wrap').innerHTML=tableFromRows(['Ruta','Nombre','Viajes','Tipos de día','Frecuencia prom.'], cmp.deleted.map(function(k){
+    var r=oldFeed.routesByShort[k], hw=avgHeadwayForRoute(oldFeed,r);
+    return '<tr><td><b>'+esc(displayRouteCode(r,k))+'</b></td><td>'+esc(routeLong(r))+'</td><td>'+routeTripsCount(oldFeed,r)+'</td><td>'+routeServicesForFeed(oldFeed,r).map(function(s){return serviceLabelForFeed(oldFeed,s);}).join(', ')+'</td><td>'+(hw?hw+' min':'—')+'</td></tr>';
+  }));
+  function stopRows(ids, feed){ return ids.slice(0,150).map(function(id){ var st=feed.stops[id]||{}; return '<tr><td><b>'+esc(id)+'</b></td><td>'+esc(cleanName(st.stop_name||''))+'</td><td>'+(st.stop_lat!==null?(+st.stop_lat).toFixed(5)+', '+(+st.stop_lon).toFixed(5):'—')+'</td></tr>'; }); }
+  document.getElementById('stops-created-wrap').innerHTML=tableFromRows(['Código','Nombre','Coordenadas'], stopRows(cmp.stopsCreated,newFeed));
+  document.getElementById('stops-deleted-wrap').innerHTML=tableFromRows(['Código','Nombre','Coordenadas'], stopRows(cmp.stopsDeleted,oldFeed));
+  renderCompareAnalysis();
+}
+async function compareSelectedGTFS(){
+  var baseSel=document.getElementById('compare-base-select'), targetSel=document.getElementById('compare-target-select');
+  if(!baseSel || !targetSel || !baseSel.value || !targetSel.value){ alert('Selecciona dos GTFS.'); return; }
+  var baseName=baseSel.options[baseSel.selectedIndex].dataset.name || baseSel.options[baseSel.selectedIndex].textContent;
+  var targetName=targetSel.options[targetSel.selectedIndex].dataset.name || targetSel.options[targetSel.selectedIndex].textContent;
+  if(baseSel.value===targetSel.value){ alert('Selecciona dos GTFS distintos para comparar.'); return; }
+  document.getElementById('compare-hint').style.display='block';
+  document.getElementById('compare-hint').textContent='Descargando y procesando '+baseName+' contra '+targetName+'...';
+  document.getElementById('compare-results').style.display='none';
+  try{
+    var baseFile=await fetchGTFSFileFromURL(baseSel.value,baseName);
+    var targetFile=await fetchGTFSFileFromURL(targetSel.value,targetName);
+    var oldFeed=await parseGTFSForCompare(baseFile);
+    var newFeed=await parseGTFSForCompare(targetFile);
+    var cmp=compareFeeds(oldFeed,newFeed);
+    document.getElementById('compare-hint').textContent='Comparación lista: '+baseName+' → '+targetName+'.';
+    renderCompare(cmp, oldFeed, newFeed);
+  }catch(err){
+    console.error(err);
+    document.getElementById('compare-hint').textContent='No se pudo comparar. Revisa que los ZIP existan en /data y que GitHub Pages pueda descargarlos.';
+  }
+}
+
+
+/* v1.3.0 — simulación GTFS y salidas por recorrido */
+function setupSimulationSelectors(){
+  fillOperatorSelect('sim-operator');
+  var simR=document.getElementById('sim-route');
+  if(!simR) return;
+  simR.innerHTML='';
+  Object.values(DATA.routes)
+    .filter(function(r){return (DATA.tripsByRoute[String(r.route_id)]||[]).length>0;})
+    .sort(function(a,b){return String(a.route_short_name).localeCompare(String(b.route_short_name),undefined,{numeric:true});})
+    .forEach(function(r){
+      var o=document.createElement('option');
+      o.value=r.route_id;
+      o.textContent=(r.route_short_name||r.route_id)+' — '+(r.route_long_name||'');
+      simR.appendChild(o);
+    });
+  syncSimulationFromRoute(true);
+}
+function bindSimulationEvents(){
+  ['sim-operator','sim-route','sim-service','sim-dir'].forEach(function(id){
+    var el=document.getElementById(id);
+    if(!el || el.dataset.boundSim) return;
+    el.dataset.boundSim='1';
+    el.addEventListener('change', function(){
+      if(id==='sim-operator') updateSimulationRoutesByOperator();
+      else if(id==='sim-route') updateSimulationServiceOptions();
+      renderSimulation();
+    });
+  });
+}
+function updateSimulationRoutesByOperator(){
+  var op=document.getElementById('sim-operator').value;
+  var sel=document.getElementById('sim-route'), old=sel.value;
+  sel.innerHTML='';
+  var routes=Object.values(DATA.routes)
+    .filter(function(r){return (DATA.tripsByRoute[String(r.route_id)]||[]).length>0 && routeMatchesOperator(r,op);})
+    .sort(function(a,b){return String(a.route_short_name).localeCompare(String(b.route_short_name),undefined,{numeric:true});});
+  routes.forEach(function(r){
+    var o=document.createElement('option'); o.value=r.route_id; o.textContent=(r.route_short_name||r.route_id)+' — '+(r.route_long_name||''); sel.appendChild(o);
+  });
+  if(routes.some(function(r){return String(r.route_id)===String(old);})) sel.value=old;
+  updateSimulationServiceOptions();
+}
+function updateSimulationServiceOptions(){
+  var routeId=(document.getElementById('sim-route')||{}).value;
+  var sel=document.getElementById('sim-service');
+  if(sel) fillServiceSelect(sel, routeServices(routeId));
+  var dirSel=document.getElementById('sim-dir'), dirs=routeDirs(routeId, sel?sel.value:'');
+  if(dirSel){
+    Array.prototype.forEach.call(dirSel.options,function(o){
+      o.disabled=(o.value!=='-1' && dirs.indexOf(o.value)===-1);
+    });
+    if(dirSel.value!=='-1' && dirs.indexOf(dirSel.value)===-1) dirSel.value='-1';
+  }
+}
+function syncSimulationFromRoute(initialOnly){
+  var simR=document.getElementById('sim-route'), routeSel=document.getElementById('sel-route');
+  if(!simR || !routeSel) return;
+  if(!initialOnly || !simR.value) simR.value=routeSel.value;
+  updateSimulationServiceOptions();
+  var simSvc=document.getElementById('sim-service'), svc=document.getElementById('sel-service');
+  if(simSvc && svc && routeServices(simR.value).indexOf(svc.value)!==-1) simSvc.value=svc.value;
+}
+function initSimulationMap(){
+  if(simMap) return;
+  simMap=L.map('sim-map',{zoomControl:false,preferCanvas:true}).setView([-33.45,-70.65],11);
+  addInstitutionalTiles(simMap,19);
+  L.control.zoom({position:'topright'}).addTo(simMap);
+}
+function routeLatLngAt(shapePts, progress){
+  if(!shapePts || !shapePts.length) return null;
+  if(shapePts.length===1) return [shapePts[0].lat, shapePts[0].lng];
+  progress=Math.max(0,Math.min(1,progress));
+  var total=0, segs=[];
+  for(var i=1;i<shapePts.length;i++){
+    var a=shapePts[i-1], b=shapePts[i];
+    var d=Math.sqrt(Math.pow(a.lat-b.lat,2)+Math.pow(a.lng-b.lng,2));
+    segs.push(d); total+=d;
+  }
+  if(total<=0){ var p0=shapePts[0]; return [p0.lat,p0.lng]; }
+  var target=total*progress, acc=0;
+  for(var j=1;j<shapePts.length;j++){
+    var sd=segs[j-1];
+    if(acc+sd>=target){
+      var prev=shapePts[j-1], next=shapePts[j], local=sd?((target-acc)/sd):0;
+      return [prev.lat+(next.lat-prev.lat)*local, prev.lng+(next.lng-prev.lng)*local];
+    }
+    acc+=sd;
+  }
+  var last=shapePts[shapePts.length-1]; return [last.lat,last.lng];
+}
+function activeSimDepartures(routeId, serviceId, dir, minute){
+  var t=minute*60;
+  return routeDepartures(routeId, serviceId, dir).filter(function(d){ return d.departure<=t && d.arrival>=t && d.arrival>d.departure; });
+}
+function vehicleIcon(label, dir){
+  var cls=String(dir)==='1'?'sim-bus sim-bus-reg':'sim-bus sim-bus-ida';
+  return L.divIcon({className:'', html:'<div class="'+cls+'">'+esc(label)+'</div>', iconSize:[34,34], iconAnchor:[17,17]});
+}
+function renderSimulation(){
+  var panel=document.getElementById('tab-simulacion');
+  if(!panel) return;
+  if(!simMap&&panel.style.display==='none') return;
+  initSimulationMap();
+  if(simVehicleLayer){simMap.removeLayer(simVehicleLayer);simVehicleLayer=null;}
+
+  var routeId=(document.getElementById('sim-route')||{}).value;
+  var svcId=(document.getElementById('sim-service')||{}).value;
+  if(!routeId||!svcId) return;
+  var dir=Number((document.getElementById('sim-dir')||{}).value||-1);
+  var route=DATA.routes[routeId]||{},routeShort=route.route_short_name||route.route_id||'';
+  var nextShapeKey=[routeId,svcId,dir].join('|');
+  var shapeChanged=nextShapeKey!==simShapeKey;
+  var viewBounds=[],shapes=shapeChanged?L.layerGroup():null,vehicles=L.layerGroup();
+
+  function directionPoints(d){
+    var trips=(DATA.tripsByRoute[String(routeId)]||[]).filter(function(t){return String(t.service_id)===String(svcId)&&tripDir(t)===String(d);});
+    var shapeTrip=trips.find(function(t){return t.shape_id&&DATA.shapes[t.shape_id]&&DATA.shapes[t.shape_id].length;});
+    if(shapeTrip) return DATA.shapes[shapeTrip.shape_id];
+    var ref=trips.find(function(t){return DATA.stopTimes[t.trip_id]&&DATA.stopTimes[t.trip_id].length;});
+    if(!ref) return [];
+    return DATA.stopTimes[ref.trip_id].map(function(st){
+      var s=DATA.stops[st.stop_id];
+      return s&&s.stop_lat!==null&&s.stop_lon!==null?{lat:+s.stop_lat,lng:+s.stop_lon}:null;
+    }).filter(Boolean);
+  }
+  function drawShape(d,color){
+    var pts=directionPoints(d);
+    var latlngs=pts.map(function(p){return [p.lat,p.lng];});
+    if(!latlngs.length) return;
+    L.polyline(latlngs,{color:'#172027',weight:9,opacity:.1,lineCap:'round'}).addTo(shapes);
+    L.polyline(latlngs,{color:color,weight:5,opacity:.9,lineCap:'round'}).addTo(shapes);
+    viewBounds=viewBounds.concat(latlngs);
+  }
+
+  if(shapeChanged){
+    if(simShapeLayer){simMap.removeLayer(simShapeLayer);simShapeLayer=null;}
+    if(dir===-1||dir===0) drawShape(0,'#2563eb');
+    if(dir===-1||dir===1) drawShape(1,'#dc2626');
+    simShapeLayer=shapes.addTo(simMap);
+    simShapeKey=nextShapeKey;
+  }
+
+  var active=activeSimDepartures(routeId,svcId,dir,simSelectedMinute);
+  active.forEach(function(d){
+    var shapePts=(d.trip.shape_id&&DATA.shapes[d.trip.shape_id])?DATA.shapes[d.trip.shape_id]:null;
+    if(!shapePts||!shapePts.length){
+      shapePts=(DATA.stopTimes[d.trip.trip_id]||[]).map(function(st){
+        var s=DATA.stops[st.stop_id];
+        return s&&s.stop_lat!==null&&s.stop_lon!==null?{lat:+s.stop_lat,lng:+s.stop_lon}:null;
+      }).filter(Boolean);
+    }
+    var duration=Math.max(1,d.arrival-d.departure);
+    var progress=(simSelectedMinute*60-d.departure)/duration;
+    var pos=routeLatLngAt(shapePts,progress);
+    if(!pos) return;
+    L.marker(pos,{icon:vehicleIcon(routeShort,d.dir)}).addTo(vehicles)
+      .bindPopup('<b>'+esc(routeShort)+' · '+esc(dirName(d.dir))+'</b><br>Salida '+secsToTime(d.departure)+' · llegada '+secsToTime(d.arrival)+'<br>'+esc(d.headsign||'Sin destino informado'));
+    if(shapeChanged) viewBounds.push(pos);
+  });
+  simVehicleLayer=vehicles.addTo(simMap);
+  if(shapeChanged&&viewBounds.length) simMap.fitBounds(viewBounds,{padding:[28,28],maxZoom:15});
+  var count=document.getElementById('sim-count');
+  if(count) count.textContent=active.length+' buses activos · '+minsToClock(simSelectedMinute);
+  renderSimulationActiveTable(active,route);
+}
+function renderSimulationActiveTable(active,route){
+  var wrap=document.getElementById('sim-active-wrap');
+  if(!wrap) return;
+  if(!active.length){
+    wrap.innerHTML='<div class="no-data">No hay viajes activos para este recorrido a la hora seleccionada.</div>';
+    return;
+  }
+  var rows=active.sort(function(a,b){return a.departure-b.departure;}).map(function(d){
+    var duration=Math.max(1,d.arrival-d.departure);
+    var progress=Math.max(0,Math.min(100,Math.round(((simSelectedMinute*60-d.departure)/duration)*100)));
+    return '<tr>'+
+      '<td><span class="route-badge" style="background:'+rColor(route)+';color:'+rText(route)+'">'+esc(route.route_short_name||route.route_id||'')+'</span></td>'+
+      '<td>'+esc(dirName(d.dir))+'</td><td>'+secsToTime(d.departure)+'</td><td>'+secsToTime(d.arrival)+'</td>'+
+      '<td class="progress-cell"><b>'+progress+'%</b><div class="progress-track"><i style="width:'+progress+'%"></i></div></td>'+
+      '<td>'+esc(d.headsign||'—')+'</td></tr>';
+  }).join('');
+  wrap.innerHTML='<div class="tbl-wrap"><table><thead><tr><th>Recorrido</th><th>Sentido</th><th>Salida</th><th>Llegada</th><th>Avance estimado</th><th>Destino</th></tr></thead><tbody>'+rows+'</tbody></table></div>';
+}
+function minsToClock(mins){
+  mins=((Number(mins)||0)%1440+1440)%1440;
+  return String(Math.floor(mins/60)).padStart(2,'0')+':'+String(mins%60).padStart(2,'0');
+}
+function onSimTimeSlide(v){
+  simSelectedMinute=Number(v)||0;
+  var label=document.getElementById('sim-time-label'); if(label) label.textContent=minsToClock(simSelectedMinute);
+  renderSimulation();
+}
+function stepSimTime(delta){
+  var slider=document.getElementById('sim-time-slider');
+  var next=((simSelectedMinute+delta)%1440+1440)%1440;
+  simSelectedMinute=next;
+  if(slider) slider.value=next;
+  onSimTimeSlide(next);
+}
+
+
+function updateSimAutoButton(running){
+  var btn=document.getElementById('sim-auto-btn');
+  if(!btn) return;
+  btn.classList.toggle('active',running);
+  btn.setAttribute('aria-pressed',running?'true':'false');
+  btn.textContent=running?'❚❚ Pausar':'▶ Reproducir';
+}
+function stopSimAuto(){
+  if(simAutoTimer){
+    clearInterval(simAutoTimer);
+    simAutoTimer=null;
+  }
+  updateSimAutoButton(false);
+}
+function startSimAuto(){
+  if(simAutoTimer) return;
+  updateSimAutoButton(true);
+  simAutoTimer=setInterval(function(){ stepSimTime(10); },2000);
+}
+function toggleSimAuto(){
+  if(simAutoTimer) stopSimAuto();
+  else startSimAuto();
+}
+document.addEventListener('visibilitychange',function(){
+  if(document.hidden) stopSimAuto();
+});
+
+/* Navegación final: Simulación GTFS y Comparar GTFS */
+
+function toggleSidebar(force){
+  var open=typeof force==='boolean'?force:!document.body.classList.contains('sidebar-open');
+  document.body.classList.toggle('sidebar-open',open);
+}
+document.addEventListener('keydown',function(e){
+  if(e.key==='Escape') toggleSidebar(false);
+});
+
+function switchTab(tab){
+  var available=tabAvailability();
+  if(!available[tab]) return;
+  var meta={
+    resumen:['Vista general','Resumen de la publicación'],
+    ruta:['Análisis operacional','Recorridos'],
+    paradero:['Puntos de detención','Paraderos'],
+    parametros:['Estándares de operación','Parámetros'],
+    simulacion:['Representación temporal','Simulación GTFS'],
+    comparar:['Cambios entre versiones','Comparación de publicaciones']
+  };
+  document.querySelectorAll('.tab-btn[data-tab]').forEach(function(button){
+    button.classList.toggle('active',button.getAttribute('data-tab')===tab);
+  });
+  ['resumen','ruta','paradero','parametros','simulacion','comparar'].forEach(function(name){
+    var panel=document.getElementById('tab-'+name);
+    if(panel) panel.style.display=name===tab?'block':'none';
+  });
+  var title=document.getElementById('page-title');
+  var eyebrow=document.getElementById('page-eyebrow');
+  if(title) title.textContent=(meta[tab]||['',tab])[1];
+  if(eyebrow) eyebrow.textContent=(meta[tab]||['',''])[0];
+  document.title=(meta[tab]?meta[tab][1]:'RED Analítica')+' — RED Analítica GTFS';
+  if(tab!=='simulacion') stopSimAuto();
+  if(tab==='resumen'){
+    renderOverview();
+    if(overviewChart) setTimeout(function(){overviewChart.resize();},40);
+  }
+  if(tab==='ruta'&&leafMap) setTimeout(function(){leafMap.invalidateSize();fitRouteMap();},60);
+  if(tab==='paradero'&&stopLeafMap) setTimeout(function(){stopLeafMap.invalidateSize();renderStopMap(activeStop);},70);
+  if(tab==='parametros') ensureParamsLoaded();
+  if(tab==='simulacion') setTimeout(function(){initSimulationMap();syncSimulationFromRoute();simMap.invalidateSize();renderSimulation();},70);
+  toggleSidebar(false);
+  window.scrollTo({top:0,behavior:'auto'});
+}
+
