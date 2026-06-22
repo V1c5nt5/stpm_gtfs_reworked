@@ -5,13 +5,13 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="theme-color" content="#8f2018">
 <title>Mapa Operativo RED — GTFS Santiago</title>
-<!-- v2.2.0 -->
+<!-- v2.2.1 -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<link rel="stylesheet" href="assets/css/app.css?v=2.2.0">
+<link rel="stylesheet" href="assets/css/app.css?v=2.2.1">
 </head>
 <body>
 
@@ -32,29 +32,51 @@
       </span>
       <span><strong>Mapa Operativo RED</strong><small>Visor GTFS de Santiago</small></span>
     </div>
-    <span class="version-chip">v2.2.0</span>
+    <span class="version-chip">v2.2.1</span>
   </header>
 
   <div class="launch-card" id="dropzone">
     <span class="step-label">Preparar mapa</span>
-    <h1>Selecciona una publicación</h1>
-    <p class="launch-lead">El mapa se construye desde el GTFS. DECO y Parámetros se vinculan automáticamente cuando están disponibles dentro de 6 días.</p>
+    <h1>Elige el tipo de consulta</h1>
+    <p class="launch-lead">La información estática permite elegir una publicación. El monitoreo en tiempo real usa automáticamente el DECO y el GTFS vigente más reciente del repositorio.</p>
 
-    <div class="fg launch-field">
-      <label for="dataset-date-select">Fecha de referencia</label>
-      <select id="dataset-date-select" onchange="updateStartDatasetAvailability()">
-        <option value="">Buscando publicaciones disponibles…</option>
-      </select>
+    <div class="launch-mode-grid" role="radiogroup" aria-label="Tipo de consulta">
+      <button class="launch-mode-card active" id="launch-mode-static" type="button" role="radio" aria-checked="true" onclick="setLaunchMode('static')">
+        <span class="launch-mode-kicker">Consulta histórica</span>
+        <strong>Información estática</strong>
+        <small>Selecciona una fecha GTFS y sus fuentes vinculadas.</small>
+      </button>
+      <button class="launch-mode-card" id="launch-mode-realtime" type="button" role="radio" aria-checked="false" onclick="setLaunchMode('realtime')">
+        <span class="launch-mode-kicker">Posiciones actuales</span>
+        <strong>Monitoreo en tiempo real</strong>
+        <small>Usa automáticamente los archivos vigentes más nuevos.</small>
+      </button>
     </div>
 
-    <div class="dataset-availability" id="dataset-availability" aria-live="polite">
-      <div class="availability-empty">Selecciona una fecha para revisar la disponibilidad.</div>
+    <div id="static-launch-options">
+      <div class="fg launch-field">
+        <label for="dataset-date-select">Fecha de referencia</label>
+        <select id="dataset-date-select" onchange="updateStartDatasetAvailability()">
+          <option value="">Buscando publicaciones disponibles…</option>
+        </select>
+      </div>
+
+      <div class="dataset-availability" id="dataset-availability" aria-live="polite">
+        <div class="availability-empty">Selecciona una fecha para revisar la disponibilidad.</div>
+      </div>
+
+      <div class="dataset-link-note" id="dataset-link-note">GTFS es el único dato obligatorio para iniciar.</div>
     </div>
 
-    <div class="dataset-link-note" id="dataset-link-note">GTFS es el único dato obligatorio para iniciar.</div>
+    <div id="realtime-launch-options" class="realtime-launch-options" hidden>
+      <div class="dataset-availability" id="realtime-dataset-availability" aria-live="polite">
+        <div class="availability-empty">Verificando los archivos vigentes en GitHub…</div>
+      </div>
+      <div class="dataset-link-note" id="realtime-dataset-note">En este modo no se puede elegir una publicación manualmente.</div>
+    </div>
 
-    <button class="primary-action launch-action" id="btn-load-dataset" type="button" onclick="loadSelectedMainGTFS()" disabled>
-      Abrir mapa
+    <button class="primary-action launch-action" id="btn-load-dataset" type="button" onclick="loadSelectedLaunchMode()" disabled>
+      <span id="btn-load-dataset-label">Abrir información estática</span>
       <span aria-hidden="true">→</span>
     </button>
 
@@ -212,6 +234,13 @@
 
           <div class="filter-stack">
             <div class="fg">
+              <label for="bus-plate-filter">Patente</label>
+              <div class="search-wrap bus-search-wrap">
+                <span class="search-icon" aria-hidden="true">⌕</span>
+                <input type="search" id="bus-plate-filter" placeholder="Ej. PGPT42" autocomplete="off" spellcheck="false" oninput="renderBusLayer()">
+              </div>
+            </div>
+            <div class="fg">
               <label for="bus-operator-filter">Operador</label>
               <select id="bus-operator-filter" onchange="onBusOperatorChange()">
                 <option value="__all">Todos los operadores</option>
@@ -239,12 +268,7 @@
 
           <div id="bus-status" class="panel-status bus-status" aria-live="polite">
             <strong>Datos aún no cargados</strong>
-            <span>Se consultarán las dos fuentes al abrir esta vista.</span>
-          </div>
-
-          <div class="bus-source-note">
-            <strong>Fuentes</strong>
-            <p><code>all-buses-data=1</code> y <code>all-buses-data=2</code>. Actualización cada 60 segundos solo mientras esta vista está activa.</p>
+            <span>Las posiciones se consultarán al abrir esta vista.</span>
           </div>
         </section>
 
@@ -268,6 +292,7 @@
             <button class="map-dir-btn" id="map-btn-both" onclick="setMapDir(-1)">Ambos</button>
           </div>
 
+          <div id="route-live-bus-status" class="route-live-bus-status" hidden></div>
           <div class="metric-strip vertical-metrics" id="route-kpis"></div>
           <div class="map-panel-footer">
             <span id="map-stop-count" class="map-count"></span>
@@ -516,9 +541,9 @@
     <button class="tab-btn" data-tab="comparar" onclick="switchTab('comparar')"><span class="dock-icon">⇄</span><span>Comparar</span></button>
   </nav>
 
-  <div class="site-version" aria-label="Versión de la aplicación">v2.2.0</div>
+  <div class="site-version" aria-label="Versión de la aplicación">v2.2.1</div>
 </div>
 
-<script src="assets/js/app.js?v=2.2.0"></script>
+<script src="assets/js/app.js?v=2.2.1"></script>
 </body>
 </html>
