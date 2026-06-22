@@ -1,4 +1,4 @@
-/* v2.1.0 — interfaz institucional y analítica */
+/* v2.2.0 — interfaz institucional y analítica */
 *,*::before,*::after{box-sizing:border-box}
 :root{
   --red:#98251c;
@@ -586,7 +586,7 @@ thead .sticky-col{z-index:3;background:#f7f9fa}
 
 
 /* =========================================================
-   v2.1.0 — arquitectura cartográfica
+   v2.2.0 — arquitectura cartográfica
    El mapa es la superficie principal; los análisis se abren
    como paneles flotantes y bandejas contextuales.
    ========================================================= */
@@ -1167,4 +1167,80 @@ body[data-map-mode="comparar"] .details-sheet.is-open{transform:translateY(0)}
 }
 @media(prefers-reduced-motion:reduce){
   .context-panel,.details-sheet{transition:none}
+}
+
+
+/* Buses en operación */
+.bus-map-legend{
+  left:auto!important;
+  right:16px!important;
+  bottom:16px!important;
+  z-index:620;
+  display:none;
+  flex-wrap:wrap;
+}
+body[data-map-mode="buses"] .bus-map-legend{display:flex}
+.bus-legend-dot{
+  width:10px;
+  height:10px;
+  display:inline-block;
+  border:1px solid #fff;
+  border-radius:50%;
+  box-shadow:0 0 0 1px rgba(15,23,42,.18);
+}
+.bus-ida{background:#2563eb}
+.bus-regreso{background:#8f2018}
+.bus-unknown{background:#68757a}
+.bus-status{margin-top:14px}
+.bus-status.is-ready{border-color:#9dcfa9;background:#f4fbf6}
+.bus-status.is-loading{border-color:#d8c88f;background:#fffaf0}
+.bus-status.is-warning{border-color:#d8c88f;background:#fffaf0}
+.bus-status.is-error{border-color:#e1aaa6;background:#fff5f4}
+.bus-source-note{
+  margin-top:14px;
+  padding:12px;
+  border:1px solid var(--line);
+  border-radius:10px;
+  background:var(--surface-2);
+  color:var(--muted);
+  font-size:12px;
+  line-height:1.45;
+}
+.bus-source-note strong{display:block;color:var(--ink);margin-bottom:3px}
+.bus-source-note code{font-size:11px}
+.visually-hidden-file{display:none!important}
+.bus-popup{min-width:220px}
+.bus-popup-kicker{
+  display:block;
+  color:#68757a;
+  font-size:10px;
+  font-weight:700;
+  letter-spacing:.08em;
+  text-transform:uppercase;
+}
+.bus-popup-route{
+  display:block;
+  margin-top:2px;
+  color:#172126;
+  font-size:22px;
+  line-height:1.15;
+}
+.bus-popup-code{
+  display:block;
+  margin-top:2px;
+  color:#68757a;
+  font-size:12px;
+}
+.bus-popup dl{margin:12px 0 0}
+.bus-popup dl div{
+  display:grid;
+  grid-template-columns:72px 1fr;
+  gap:10px;
+  padding:5px 0;
+  border-top:1px solid rgba(40,55,60,.1);
+}
+.bus-popup dt{color:#68757a;font-size:11px}
+.bus-popup dd{margin:0;color:#172126;font-size:12px;font-weight:650}
+@media(max-width:760px){
+  .bus-map-legend{display:none!important}
 }

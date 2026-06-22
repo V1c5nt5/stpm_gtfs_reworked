@@ -1,4 +1,4 @@
-/* v2.1.0 — lógica principal del Mapa Operativo RED
+/* v2.2.0 — lógica principal del Mapa Operativo RED
    Separado desde el HTML para facilitar mantenimiento en GitHub Pages. */
 
 var SVC = {L:'Lunes a Viernes', S:'Sábado', D:'Domingo', F:'Festivo', LJ:'Lun a Jue', V:'Viernes'};
@@ -24,6 +24,40 @@ function freshData(){
 var freqChart = null, stopChart = null, overviewChart = null;
 var leafMap = null, layerIda = null, layerReg = null, layerStops = null, routeMapBounds = null;
 var trafficLayer = null, trafficRefreshTimer = null, trafficKey = '', trafficHadError = false;
+var BUS_ENDPOINTS = [
+  'https://velocidades.seguimos.cl/?all-buses-data=1',
+  'https://velocidades.seguimos.cl/?all-buses-data=2'
+];
+var BUS_DECO_FALLBACK_URL = 'assets/data/DECO_VIGENTES_20260420.csv';
+var BUS_OPERATOR_NAMES = {
+  '2':'U2 - Su Bus',
+  '4':'U4 - VOY Santiago SpA',
+  '5':'U5 - Metropolitana',
+  '16':'U3 - Vule',
+  '32':'U8 - Alfa US1',
+  '33':'U9 - Omega US2',
+  '34':'U10 - STU US3',
+  '35':'U11 - RBU US4',
+  '36':'U12 - STU US5',
+  '37':'U13 - RBU US6',
+  '38':'U14 - VOY Santiago US14',
+  '39':'U15 - VOY Santiago US15',
+  '40':'U16 - Gran Americas US16',
+  '41':'U18 - Conecta US18',
+  '42':'U19 - Conecta US17'
+};
+var BUS_STATE = {
+  features:[],
+  direction:'all',
+  loading:false,
+  lastLoadedAt:null,
+  sourceCount:0,
+  sourceErrors:[],
+  decoReady:false,
+  decoIndex:null,
+  visibleCount:0
+};
+var busLayer = null, busRefreshTimer = null, busRequestToken = 0;
 var simMap = null, simShapeLayer = null, simVehicleLayer = null, simShapeKey = '';
 var simSelectedMinute = 480;
 var simAutoTimer = null;
@@ -529,6 +563,7 @@ function tabAvailability(){
   return {
     resumen:gtfs,
     trafico:gtfs,
+    buses:gtfs,
     ruta:gtfs,
     paradero:gtfs,
     parametros:params,
@@ -548,7 +583,7 @@ function configureAvailableTabs(){
     var panel=document.getElementById('tab-'+tab);
     if(panel && !available[tab]) panel.style.display='none';
   });
-  var first=['resumen','trafico','ruta','paradero','parametros','simulacion','comparar'].find(function(tab){return available[tab];});
+  var first=['resumen','trafico','buses','ruta','paradero','parametros','simulacion','comparar'].find(function(tab){return available[tab];});
   if(first) switchTab(first);
 }
 
@@ -2309,6 +2344,386 @@ document.addEventListener('visibilitychange',function(){
   if(document.hidden) stopSimAuto();
 });
 
+
+/* Buses en operación */
+function normalizeBusKey(value){
+  return String(value||'').trim().toUpperCase().replace(/\s+/g,'');
+}
+function setBusStatus(title, detail, state){
+  var box=document.getElementById('bus-status');
+  if(!box) return;
+  box.className='panel-status bus-status'+(state?' is-'+state:'');
+  box.innerHTML='<strong>'+esc(title)+'</strong><span>'+esc(detail)+'</span>';
+}
+function parseBusDate(value){
+  var raw=String(value||'').trim();
+  if(!raw) return null;
+  if(/[+-]\d{4}$/.test(raw)) raw=raw.replace(/([+-]\d{2})(\d{2})$/,'$1:$2');
+  var date=new Date(raw);
+  return isNaN(date.getTime())?null:date;
+}
+function formatBusDate(value){
+  var date=value instanceof Date?value:parseBusDate(value);
+  if(!date) return 'Hora no informada';
+  return new Intl.DateTimeFormat('es-CL',{
+    day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit',second:'2-digit'
+  }).format(date);
+}
+function buildBusDecoIndex(rows){
+  var index={
+    CODIGO_RUTA:Object.create(null),
+    CODIGO_MTT:Object.create(null),
+    SERVICIO_DECO:Object.create(null),
+    CODIGO_USUARIO:Object.create(null)
+  };
+  (rows||[]).forEach(function(row){
+    if(!row) return;
+    Object.keys(index).forEach(function(field){
+      var key=normalizeBusKey(row[field]);
+      if(key && !index[field][key]) index[field][key]=row;
+    });
+  });
+  return index;
+}
+async function ensureBusDeco(){
+  if(BUS_STATE.decoReady) return;
+  var rows=(DATA.decoRows||[]).slice();
+  try{
+    var response=await fetch(BUS_DECO_FALLBACK_URL,{cache:'force-cache'});
+    if(response.ok){
+      var text=await response.text();
+      var fallbackRows=Papa.parse(text.trim(),{
+        header:true,skipEmptyLines:true,dynamicTyping:false,delimiter:';'
+      }).data.filter(function(row){
+        return row && (row.CODIGO_USUARIO||row.CODIGO_MTT||row.SERVICIO_DECO||row.CODIGO_RUTA);
+      });
+      rows=rows.concat(fallbackRows);
+    }
+  }catch(error){
+    console.warn('No se pudo cargar el DECO local para buses.',error);
+  }
+  BUS_STATE.decoIndex=buildBusDecoIndex(rows);
+  BUS_STATE.decoReady=true;
+}
+function findBusDeco(rawRoute){
+  var index=BUS_STATE.decoIndex;
+  if(!index) return null;
+  var key=normalizeBusKey(rawRoute);
+  var exactOrder=['CODIGO_RUTA','CODIGO_MTT','SERVICIO_DECO','CODIGO_USUARIO'];
+  for(var i=0;i<exactOrder.length;i++){
+    var exact=index[exactOrder[i]][key];
+    if(exact) return exact;
+  }
+  var base=String(rawRoute||'').trim().toUpperCase().match(/^T(\d+)(?=\s|$)/);
+  if(base){
+    var numericKey=base[1];
+    var baseOrder=['CODIGO_MTT','SERVICIO_DECO','CODIGO_USUARIO'];
+    for(var j=0;j<baseOrder.length;j++){
+      var row=index[baseOrder[j]][numericKey];
+      if(row) return row;
+    }
+  }
+  return null;
+}
+function busDirection(properties){
+  var label=String(properties.route_direction||'').trim().toLowerCase();
+  if(label.indexOf('ida')===0) return 'I';
+  if(label.indexOf('reg')===0) return 'R';
+  var route=String(properties.route_code||'').trim().toUpperCase();
+  if(/I$/.test(route)) return 'I';
+  if(/R$/.test(route)) return 'R';
+  return '';
+}
+function enrichBusFeature(feature){
+  if(!feature || !feature.geometry || feature.geometry.type!=='Point') return null;
+  var coordinates=feature.geometry.coordinates||[];
+  var longitude=Number(coordinates[0]), latitude=Number(coordinates[1]);
+  if(!isFinite(longitude)||!isFinite(latitude)) return null;
+  if(latitude<-35 || latitude>-32 || longitude<-72 || longitude>-69) return null;
+  var properties=feature.properties||{};
+  var rawRoute=String(properties.route_code||'').trim();
+  var deco=findBusDeco(rawRoute);
+  var publicRoute=String(deco&&deco.CODIGO_USUARIO||rawRoute||'Sin recorrido').trim();
+  var operatorKey=String(properties.operator===undefined||properties.operator===null?'':properties.operator).trim();
+  var operatorName=BUS_OPERATOR_NAMES[operatorKey] || String(deco&&(deco.CLI_DSC||deco.OPERADOR)||'Operador no informado').trim();
+  var plate=String(properties.license_plate||'PPU no informada').trim().toUpperCase();
+  var timestamp=parseBusDate(properties.timestamp);
+  var direction=busDirection(properties);
+  return {
+    latitude:latitude,
+    longitude:longitude,
+    plate:plate,
+    rawRoute:rawRoute||'Código no informado',
+    publicRoute:publicRoute,
+    routeKey:normalizeBusKey(publicRoute),
+    direction:direction,
+    directionLabel:direction==='I'?'Ida':(direction==='R'?'Regreso':'Sin sentido'),
+    operatorKey:operatorKey||'sin-operador',
+    operatorName:operatorName,
+    speed:isFinite(Number(properties.speed))?Number(properties.speed):null,
+    timestamp:timestamp,
+    timestampRaw:properties.timestamp||''
+  };
+}
+function extractBusFeatures(payload){
+  if(typeof payload==='string'){
+    payload=JSON.parse(payload.replace(/^\uFEFF/,'').trim());
+  }
+  if(payload && payload.geojson && Array.isArray(payload.geojson.features)) return payload.geojson.features;
+  if(payload && payload.data && payload.data.geojson && Array.isArray(payload.data.geojson.features)) return payload.data.geojson.features;
+  if(payload && Array.isArray(payload.features)) return payload.features;
+  if(Array.isArray(payload)) return payload;
+  throw new Error('La respuesta no contiene una colección de buses válida.');
+}
+async function fetchBusEndpoint(url){
+  var controller=typeof AbortController!=='undefined'?new AbortController():null;
+  var timeout=controller?setTimeout(function(){controller.abort();},20000):null;
+  try{
+    var response=await fetch(url,{
+      cache:'no-store',
+      credentials:'omit',
+      signal:controller?controller.signal:undefined
+    });
+    if(!response.ok) throw new Error('HTTP '+response.status);
+    var text=await response.text();
+    return extractBusFeatures(text);
+  }finally{
+    if(timeout) clearTimeout(timeout);
+  }
+}
+function mergeBusFeatures(featureLists){
+  var byPlate=new Map();
+  (featureLists||[]).forEach(function(list){
+    (list||[]).forEach(function(feature){
+      var bus=enrichBusFeature(feature);
+      if(!bus) return;
+      var key=normalizeBusKey(bus.plate);
+      if(!key || key==='PPUNOINFORMADA'){
+        key=normalizeBusKey(bus.rawRoute)+'|'+bus.latitude.toFixed(6)+'|'+bus.longitude.toFixed(6);
+      }
+      var previous=byPlate.get(key);
+      if(!previous || (!previous.timestamp && bus.timestamp) ||
+         (previous.timestamp && bus.timestamp && bus.timestamp>previous.timestamp)){
+        byPlate.set(key,bus);
+      }
+    });
+  });
+  return Array.from(byPlate.values());
+}
+function operatorDisplayLabel(key, name){
+  if(key==='sin-operador') return name;
+  return 'Operador '+key+' — '+name;
+}
+function fillBusOperatorOptions(){
+  var select=document.getElementById('bus-operator-filter');
+  if(!select) return;
+  var keep=select.value||'__all';
+  var operators=Object.create(null);
+  BUS_STATE.features.forEach(function(bus){
+    if(!operators[bus.operatorKey]) operators[bus.operatorKey]={name:bus.operatorName,count:0};
+    operators[bus.operatorKey].count++;
+  });
+  select.innerHTML='<option value="__all">Todos los operadores ('+BUS_STATE.features.length+')</option>';
+  Object.keys(operators).sort(function(a,b){
+    return a.localeCompare(b,undefined,{numeric:true});
+  }).forEach(function(key){
+    var item=operators[key];
+    var option=document.createElement('option');
+    option.value=key;
+    option.textContent=operatorDisplayLabel(key,item.name)+' ('+item.count+')';
+    select.appendChild(option);
+  });
+  if(Array.from(select.options).some(function(option){return option.value===keep;})) select.value=keep;
+  else select.value='__all';
+}
+function updateBusRouteOptions(){
+  var operatorSelect=document.getElementById('bus-operator-filter');
+  var routeSelect=document.getElementById('bus-route-filter');
+  if(!routeSelect) return;
+  var operator=operatorSelect?operatorSelect.value:'__all';
+  var keep=routeSelect.value||'__all';
+  var routes=Object.create(null);
+  BUS_STATE.features.forEach(function(bus){
+    if(operator!=='__all' && bus.operatorKey!==operator) return;
+    if(!routes[bus.routeKey]) routes[bus.routeKey]={label:bus.publicRoute,count:0};
+    routes[bus.routeKey].count++;
+  });
+  var total=Object.keys(routes).reduce(function(sum,key){return sum+routes[key].count;},0);
+  routeSelect.innerHTML='<option value="__all">Todos los recorridos ('+total+')</option>';
+  Object.keys(routes).sort(function(a,b){
+    return routes[a].label.localeCompare(routes[b].label,undefined,{numeric:true,sensitivity:'base'});
+  }).forEach(function(key){
+    var option=document.createElement('option');
+    option.value=key;
+    option.textContent=routes[key].label+' ('+routes[key].count+')';
+    routeSelect.appendChild(option);
+  });
+  if(Array.from(routeSelect.options).some(function(option){return option.value===keep;})) routeSelect.value=keep;
+  else routeSelect.value='__all';
+}
+function onBusOperatorChange(){
+  updateBusRouteOptions();
+  renderBusLayer();
+}
+function setBusDirection(direction){
+  BUS_STATE.direction=direction;
+  ['all','i','r'].forEach(function(key){
+    var button=document.getElementById('bus-dir-'+key);
+    if(button) button.classList.toggle('active',key===(direction==='all'?'all':direction.toLowerCase()));
+  });
+  renderBusLayer();
+}
+function filteredBuses(){
+  var operatorSelect=document.getElementById('bus-operator-filter');
+  var routeSelect=document.getElementById('bus-route-filter');
+  var operator=operatorSelect?operatorSelect.value:'__all';
+  var route=routeSelect?routeSelect.value:'__all';
+  return BUS_STATE.features.filter(function(bus){
+    if(operator!=='__all' && bus.operatorKey!==operator) return false;
+    if(route!=='__all' && bus.routeKey!==route) return false;
+    if(BUS_STATE.direction!=='all' && bus.direction!==BUS_STATE.direction) return false;
+    return true;
+  });
+}
+function busPopupHtml(bus){
+  var speed=bus.speed===null?'No informada':bus.speed.toLocaleString('es-CL',{maximumFractionDigits:1})+' km/h';
+  return '<div class="bus-popup">'+
+    '<span class="bus-popup-kicker">Recorrido</span>'+
+    '<strong class="bus-popup-route">'+esc(bus.publicRoute)+'</strong>'+
+    '<span class="bus-popup-code">Código TS/RED · '+esc(bus.rawRoute)+'</span>'+
+    '<dl>'+
+      '<div><dt>PPU</dt><dd>'+esc(bus.plate)+'</dd></div>'+
+      '<div><dt>Operador</dt><dd>'+esc(operatorDisplayLabel(bus.operatorKey,bus.operatorName))+'</dd></div>'+
+      '<div><dt>Sentido</dt><dd>'+esc(bus.directionLabel)+'</dd></div>'+
+      '<div><dt>Velocidad</dt><dd>'+esc(speed)+'</dd></div>'+
+      '<div><dt>Último dato</dt><dd>'+esc(formatBusDate(bus.timestamp))+'</dd></div>'+
+    '</dl>'+
+  '</div>';
+}
+function detachBusLayer(){
+  if(leafMap && busLayer && leafMap.hasLayer(busLayer)) leafMap.removeLayer(busLayer);
+}
+function renderBusLayer(){
+  if(!leafMap || CURRENT_MAP_MODE!=='buses') return;
+  detachBusLayer();
+  var buses=filteredBuses();
+  BUS_STATE.visibleCount=buses.length;
+  busLayer=L.layerGroup();
+  buses.forEach(function(bus){
+    var color=bus.direction==='I'?'#2563eb':(bus.direction==='R'?'#8f2018':'#68757a');
+    var marker=L.circleMarker([bus.latitude,bus.longitude],{
+      radius:4,
+      color:'#ffffff',
+      weight:1,
+      opacity:0.95,
+      fillColor:color,
+      fillOpacity:0.82,
+      bubblingMouseEvents:false
+    });
+    marker.bindPopup(function(){return busPopupHtml(bus);},{maxWidth:310});
+    busLayer.addLayer(marker);
+  });
+  busLayer.addTo(leafMap);
+  var suffix=BUS_STATE.sourceCount<2?' Una de las dos fuentes no respondió.':'';
+  setBusStatus(
+    'Buses visibles: '+buses.length,
+    'Total consolidado: '+BUS_STATE.features.length+'. Actualizado: '+formatBusDate(BUS_STATE.lastLoadedAt)+'.'+suffix,
+    BUS_STATE.sourceCount<2?'warning':'ready'
+  );
+  var label=document.getElementById('map-context-label');
+  if(label) label.textContent=buses.length+' buses visibles';
+}
+async function applyBusFeatureLists(featureLists, sourceCount, sourceErrors){
+  await ensureBusDeco();
+  BUS_STATE.features=mergeBusFeatures(featureLists);
+  BUS_STATE.sourceCount=sourceCount;
+  BUS_STATE.sourceErrors=sourceErrors||[];
+  BUS_STATE.lastLoadedAt=new Date();
+  fillBusOperatorOptions();
+  updateBusRouteOptions();
+  if(CURRENT_MAP_MODE==='buses') renderBusLayer();
+}
+async function loadBusData(force){
+  if(BUS_STATE.loading) return;
+  if(!force && BUS_STATE.lastLoadedAt && Date.now()-BUS_STATE.lastLoadedAt.getTime()<45000){
+    renderBusLayer();
+    startBusRefresh();
+    return;
+  }
+  BUS_STATE.loading=true;
+  var token=++busRequestToken;
+  setBusStatus('Actualizando posiciones','Consultando las dos fuentes de buses…','loading');
+  try{
+    await ensureBusDeco();
+    var results=await Promise.allSettled(BUS_ENDPOINTS.map(fetchBusEndpoint));
+    if(token!==busRequestToken) return;
+    var lists=[], errors=[];
+    results.forEach(function(result,index){
+      if(result.status==='fulfilled') lists.push(result.value);
+      else errors.push('Fuente '+(index+1)+': '+(result.reason&&result.reason.message||'sin respuesta'));
+    });
+    if(!lists.length) throw new Error('Las dos fuentes rechazaron la solicitud.');
+    await applyBusFeatureLists(lists,lists.length,errors);
+  }catch(error){
+    console.error(error);
+    setBusStatus(
+      'No se pudieron cargar los buses',
+      'La fuente puede estar fuera de línea o bloquear solicitudes CORS. Usa “Cargar respaldo” con un JSON descargado desde la fuente.',
+      'error'
+    );
+  }finally{
+    if(token===busRequestToken) BUS_STATE.loading=false;
+    if(CURRENT_MAP_MODE==='buses') startBusRefresh();
+  }
+}
+function chooseBusJsonFile(){
+  var input=document.getElementById('bus-json-file');
+  if(input) input.click();
+}
+async function loadBusJsonFile(input){
+  var file=input&&input.files&&input.files[0];
+  if(!file) return;
+  setBusStatus('Leyendo respaldo','Procesando '+file.name+'…','loading');
+  try{
+    var text=await file.text();
+    var features=extractBusFeatures(text);
+    await applyBusFeatureLists([features],1,[]);
+  }catch(error){
+    console.error(error);
+    setBusStatus('Archivo no válido','El respaldo debe contener geojson.features o features.','error');
+  }finally{
+    input.value='';
+  }
+}
+function startBusRefresh(){
+  stopBusRefresh();
+  if(CURRENT_MAP_MODE!=='buses') return;
+  busRefreshTimer=setInterval(function(){
+    if(document.hidden || CURRENT_MAP_MODE!=='buses') return;
+    loadBusData(true);
+  },60000);
+}
+function stopBusRefresh(){
+  if(busRefreshTimer){
+    clearInterval(busRefreshTimer);
+    busRefreshTimer=null;
+  }
+}
+function openBusView(){
+  if(!leafMap) initMap();
+  if(BUS_STATE.features.length){
+    renderBusLayer();
+    startBusRefresh();
+  }else{
+    loadBusData(false);
+  }
+}
+document.addEventListener('visibilitychange',function(){
+  if(document.hidden) stopBusRefresh();
+  else if(CURRENT_MAP_MODE==='buses') startBusRefresh();
+});
+
+
 /* Navegación cartográfica */
 var CURRENT_MAP_MODE='resumen';
 
@@ -2367,6 +2782,7 @@ function mapContextLabel(tab){
     return 'Buscar ubicación';
   }
   if(tab==='trafico') return 'Tránsito actual de Santiago';
+  if(tab==='buses') return BUS_STATE.visibleCount?BUS_STATE.visibleCount+' buses visibles':'Buses en operación';
   if(tab==='simulacion') return 'Simulación GTFS';
   if(tab==='comparar') return 'Comparación de publicaciones';
   if(tab==='parametros') return 'Parámetros operacionales';
@@ -2378,6 +2794,10 @@ function setMapContext(tab){
   if(tab!=='trafico'){
     detachTrafficLayer();
     stopTrafficRefresh();
+  }
+  if(tab!=='buses'){
+    detachBusLayer();
+    stopBusRefresh();
   }
   document.querySelectorAll('.geo-map').forEach(function(el){el.classList.remove('is-active');});
   var routeMap=document.getElementById('map');
@@ -2409,6 +2829,7 @@ function setMapContext(tab){
         attachTrafficLayer();
         startTrafficRefresh();
       }
+      if(tab==='buses') openBusView();
       fitSantiago(leafMap);
       setTimeout(function(){leafMap.invalidateSize();},50);
     }
@@ -2449,6 +2870,7 @@ function switchTab(tab){
   var meta={
     resumen:['Cobertura metropolitana','Mapa de Santiago','Vista general'],
     trafico:['Flujo vial en tiempo real','Tránsito actual de Santiago','Tránsito'],
+    buses:['Posición operacional','Buses en operación','Buses'],
     ruta:['Geometría y operación','Trazado de recorrido','Trazado'],
     paradero:['Puntos de detención','Ubicación de paradero','Ubicación'],
     parametros:['Fuente complementaria','Parámetros operacionales','Parámetros'],
@@ -2458,7 +2880,7 @@ function switchTab(tab){
   document.querySelectorAll('.tab-btn[data-tab]').forEach(function(button){
     button.classList.toggle('active',button.getAttribute('data-tab')===tab);
   });
-  ['resumen','trafico','ruta','paradero','parametros','simulacion','comparar'].forEach(function(name){
+  ['resumen','trafico','buses','ruta','paradero','parametros','simulacion','comparar'].forEach(function(name){
     var panel=document.getElementById('tab-'+name);
     if(panel) panel.style.display=name===tab?'block':'none';
   });

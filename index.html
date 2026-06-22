@@ -5,13 +5,13 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="theme-color" content="#8f2018">
 <title>Mapa Operativo RED — GTFS Santiago</title>
-<!-- v2.1.0 -->
+<!-- v2.2.0 -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<link rel="stylesheet" href="assets/css/app.css?v=2.1.0">
+<link rel="stylesheet" href="assets/css/app.css?v=2.2.0">
 </head>
 <body>
 
@@ -32,7 +32,7 @@
       </span>
       <span><strong>Mapa Operativo RED</strong><small>Visor GTFS de Santiago</small></span>
     </div>
-    <span class="version-chip">v2.1.0</span>
+    <span class="version-chip">v2.2.0</span>
   </header>
 
   <div class="launch-card" id="dropzone">
@@ -114,6 +114,12 @@
         <span><i class="traffic-swatch traffic-heavy"></i> Congestión</span>
         <span><i class="traffic-swatch traffic-closed"></i> Detenido</span>
       </div>
+
+      <div class="map-legend floating bus-map-legend" id="bus-map-legend" aria-label="Leyenda de buses">
+        <span><i class="bus-legend-dot bus-ida"></i> Ida</span>
+        <span><i class="bus-legend-dot bus-regreso"></i> Regreso</span>
+        <span><i class="bus-legend-dot bus-unknown"></i> Sin sentido</span>
+      </div>
     </div>
 
     <aside class="context-panel" id="context-panel">
@@ -193,6 +199,52 @@
             <strong>Proveedor</strong>
             <p>La capa usa Traffic Flow Tiles de TomTom y se actualiza cada 5 minutos mientras esta vista permanece abierta. Verifica la disponibilidad y límites del plan antes de publicar.</p>
             <a href="https://developer.tomtom.com/" target="_blank" rel="noopener noreferrer">Obtener o revisar una clave</a>
+          </div>
+        </section>
+
+        <!-- BUSES EN OPERACIÓN -->
+        <section id="tab-buses" class="page-panel" style="display:none">
+          <div class="panel-intro">
+            <span class="section-kicker">Posición operacional</span>
+            <h3>Buses en el mapa</h3>
+            <p>Cada punto representa una PPU informada por la fuente. El código de usuario DECO se muestra como recorrido principal y el código TS/RED queda debajo.</p>
+          </div>
+
+          <div class="filter-stack">
+            <div class="fg">
+              <label for="bus-operator-filter">Operador</label>
+              <select id="bus-operator-filter" onchange="onBusOperatorChange()">
+                <option value="__all">Todos los operadores</option>
+              </select>
+            </div>
+            <div class="fg">
+              <label for="bus-route-filter">Recorrido</label>
+              <select id="bus-route-filter" onchange="renderBusLayer()">
+                <option value="__all">Todos los recorridos</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="segmented-control bus-dir-tabs" aria-label="Sentido del recorrido">
+            <button class="map-dir-btn active" id="bus-dir-all" type="button" onclick="setBusDirection('all')">Todos</button>
+            <button class="map-dir-btn" id="bus-dir-i" type="button" onclick="setBusDirection('I')">Ida</button>
+            <button class="map-dir-btn" id="bus-dir-r" type="button" onclick="setBusDirection('R')">Regreso</button>
+          </div>
+
+          <div class="panel-actions">
+            <button class="primary-action compact-action" type="button" onclick="loadBusData(true)">Actualizar</button>
+            <button class="secondary-action" type="button" onclick="chooseBusJsonFile()">Cargar respaldo</button>
+          </div>
+          <input id="bus-json-file" class="visually-hidden-file" type="file" accept=".json,.txt,application/json,text/plain" onchange="loadBusJsonFile(this)">
+
+          <div id="bus-status" class="panel-status bus-status" aria-live="polite">
+            <strong>Datos aún no cargados</strong>
+            <span>Se consultarán las dos fuentes al abrir esta vista.</span>
+          </div>
+
+          <div class="bus-source-note">
+            <strong>Fuentes</strong>
+            <p><code>all-buses-data=1</code> y <code>all-buses-data=2</code>. Actualización cada 60 segundos solo mientras esta vista está activa.</p>
           </div>
         </section>
 
@@ -456,6 +508,7 @@
   <nav class="map-dock" aria-label="Herramientas principales">
     <button class="tab-btn active" data-tab="resumen" onclick="switchTab('resumen')"><span class="dock-icon">⌖</span><span>Mapa</span></button>
     <button class="tab-btn" data-tab="trafico" onclick="switchTab('trafico')"><span class="dock-icon">≋</span><span>Tránsito</span></button>
+    <button class="tab-btn" data-tab="buses" onclick="switchTab('buses')"><span class="dock-icon">••</span><span>Buses</span></button>
     <button class="tab-btn" data-tab="ruta" onclick="switchTab('ruta')"><span class="dock-icon">↝</span><span>Trazado</span></button>
     <button class="tab-btn" data-tab="paradero" onclick="switchTab('paradero')"><span class="dock-icon">●</span><span>Ubicación</span></button>
     <button class="tab-btn" data-tab="parametros" onclick="switchTab('parametros')"><span class="dock-icon">≡</span><span>Parámetros</span></button>
@@ -463,9 +516,9 @@
     <button class="tab-btn" data-tab="comparar" onclick="switchTab('comparar')"><span class="dock-icon">⇄</span><span>Comparar</span></button>
   </nav>
 
-  <div class="site-version" aria-label="Versión de la aplicación">v2.1.0</div>
+  <div class="site-version" aria-label="Versión de la aplicación">v2.2.0</div>
 </div>
 
-<script src="assets/js/app.js?v=2.1.0"></script>
+<script src="assets/js/app.js?v=2.2.0"></script>
 </body>
 </html>
