@@ -2471,13 +2471,16 @@ function enrichBusFeature(feature){
     : (sourceOperatorKey||'sin-operador');
   var operatorName=busOperatorNameFromDeco(deco) || BUS_OPERATOR_NAMES[sourceOperatorKey] || 'Operador no informado';
   var plate=String(properties.license_plate||'Patente no informada').trim().toUpperCase();
+  var internalMatch=rawRoute.match(/(T[^,;|]+)/i);
+  var internalCode=internalMatch?internalMatch[1].trim().toUpperCase():(rawRoute||'Código no informado');
   var timestamp=parseBusDate(properties.timestamp);
   var direction=busDirection(properties);
   return {
     latitude:latitude,
     longitude:longitude,
     plate:plate,
-    rawRoute:rawRoute||'Código no informado',
+    rawRoute:internalCode,
+    internalCode:internalCode,
     publicRoute:publicRoute,
     routeKey:normalizeBusKey(publicRoute),
     direction:direction,
@@ -2636,7 +2639,7 @@ function busPopupHtml(bus){
   return '<div class="bus-popup">'+
     '<span class="bus-popup-kicker">Recorrido</span>'+
     '<strong class="bus-popup-route">'+esc(bus.publicRoute)+'</strong>'+
-    '<span class="bus-popup-code">Código interno · '+esc(bus.rawRoute)+'</span>'+
+    '<span class="bus-popup-code">Código interno · '+esc(bus.internalCode||bus.rawRoute)+'</span>'+
     '<dl>'+
       '<div><dt>Patente</dt><dd>'+esc(bus.plate)+'</dd></div>'+
       '<div><dt>Operador</dt><dd>'+esc(operatorDisplayLabel(bus.operatorKey,bus.operatorName))+'</dd></div>'+
@@ -2666,6 +2669,7 @@ function renderBusLayer(){
       fillOpacity:0.82,
       bubblingMouseEvents:false
     });
+    marker.bindTooltip(bus.plate,{direction:'top',offset:[0,-8],opacity:0.9});
     marker.bindPopup(function(){return busPopupHtml(bus);},{maxWidth:310});
     busLayer.addLayer(marker);
   });
