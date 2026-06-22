@@ -2535,8 +2535,8 @@ function mergeBusFeatures(featureLists){
   return Array.from(byPlate.values());
 }
 function operatorDisplayLabel(key, name){
-  if(key==='sin-operador' || String(key).indexOf('deco:')===0) return name;
-  return 'Operador '+key+' — '+name;
+  var publicName=String(name||'').trim();
+  return publicName || 'Operador no informado';
 }
 function fillBusOperatorOptions(){
   var select=document.getElementById('bus-operator-filter');
