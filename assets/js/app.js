@@ -2379,7 +2379,7 @@ function busOperatorKeyFromDeco(row){
   return numeric || 'deco:'+normalized;
 }
 function decoPublicRoute(row){
-  return String(row&&(row.CODIGO_USUARIO||row.CODIGO_MTT||row.SERVICIO_DECO||row.CODIGO_RUTA)||'').trim();
+  return String(row&&row.CODIGO_USUARIO||'').trim();
 }
 function setBusStatus(title, detail, state, emphasis){
   var box=document.getElementById('bus-status');
@@ -2463,7 +2463,7 @@ function enrichBusFeature(feature){
   var properties=feature.properties||{};
   var rawRoute=String(properties.route_code||'').trim();
   var deco=findBusDeco(rawRoute);
-  var publicRoute=String(deco&&deco.CODIGO_USUARIO||rawRoute||'Sin recorrido').trim();
+  var publicRoute=String(deco&&deco.CODIGO_USUARIO||'Sin recorrido').trim()||rawRoute||'Sin recorrido';
   var sourceOperatorKey=String(properties.operator===undefined||properties.operator===null?'':properties.operator).trim();
   var decoOperatorKey=deco?busOperatorKeyFromDeco(deco):'';
   var operatorKey=decoOperatorKey && decoOperatorKey!=='sin-operador'
@@ -2472,7 +2472,8 @@ function enrichBusFeature(feature){
   var operatorName=busOperatorNameFromDeco(deco) || BUS_OPERATOR_NAMES[sourceOperatorKey] || 'Operador no informado';
   var plate=String(properties.license_plate||'Patente no informada').trim().toUpperCase();
   var internalMatch=rawRoute.match(/(T[^,;|]+)/i);
-  var internalCode=internalMatch?internalMatch[1].trim().toUpperCase():(rawRoute||'Código no informado');
+  var internalCode=String(deco&&deco.CODIGO_RUTA||'').trim().toUpperCase();
+  if(!internalCode) internalCode=internalMatch?internalMatch[1].trim().toUpperCase():(rawRoute||'Código no informado');
   var timestamp=parseBusDate(properties.timestamp);
   var direction=busDirection(properties);
   return {
@@ -2659,17 +2660,9 @@ function renderBusLayer(){
   BUS_STATE.visibleCount=buses.length;
   busLayer=L.layerGroup();
   buses.forEach(function(bus){
-    var color=bus.direction==='I'?'#2563eb':(bus.direction==='R'?'#8f2018':'#68757a');
-    var marker=L.circleMarker([bus.latitude,bus.longitude],{
-      radius:4,
-      color:'#ffffff',
-      weight:1,
-      opacity:0.95,
-      fillColor:color,
-      fillOpacity:0.82,
-      bubblingMouseEvents:false
-    });
-    marker.bindTooltip(bus.plate,{direction:'top',offset:[0,-8],opacity:0.9});
+    var color=bus.direction==='I'?'#00bcd4':(bus.direction==='R'?'#ff6b00':'#7c3aed');
+    var icon=L.divIcon({className:'',html:'<div style="position:relative;text-align:center"><div style="width:22px;height:22px;border-radius:50%;background:'+color+';border:3px solid #fff;box-shadow:0 0 0 2px rgba(0,0,0,.45)"></div><div style="margin-top:2px;background:#111;color:#fff;font-size:10px;font-weight:700;padding:1px 3px;border-radius:3px;white-space:nowrap">'+esc(bus.plate)+'</div></div>',iconSize:[60,38],iconAnchor:[11,11]});
+    var marker=L.marker([bus.latitude,bus.longitude],{icon:icon,bubblingMouseEvents:false,zIndexOffset:1000});
     marker.bindPopup(function(){return busPopupHtml(bus);},{maxWidth:310});
     busLayer.addLayer(marker);
   });
@@ -2710,16 +2703,8 @@ function renderRouteBusOverlay(){
   });
   busLayer=L.layerGroup();
   buses.forEach(function(bus){
-    var color=bus.direction==='I'?'#2563eb':(bus.direction==='R'?'#8f2018':'#68757a');
-    var marker=L.circleMarker([bus.latitude,bus.longitude],{
-      radius:5,
-      color:'#ffffff',
-      weight:2,
-      opacity:1,
-      fillColor:color,
-      fillOpacity:0.9,
-      bubblingMouseEvents:false
-    });
+    var marker=L.circleMarker([bus.latitude,bus.longitude],{radius:9,color:'#fff',weight:3,fillColor:'#00bcd4',fillOpacity:1,bubblingMouseEvents:false});
+    marker.bindTooltip(bus.plate,{permanent:true,direction:'top',offset:[0,-10]});
     marker.bindPopup(function(){return busPopupHtml(bus);},{maxWidth:310});
     busLayer.addLayer(marker);
   });
