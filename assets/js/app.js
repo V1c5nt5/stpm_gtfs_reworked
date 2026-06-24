@@ -1,7 +1,7 @@
 
 var VEHICLE_REGISTRY={};
 async function loadVehicleRegistry(){
- try{ VEHICLE_REGISTRY=await (await fetch('vehicle_registry.json')).json(); }catch(e){ VEHICLE_REGISTRY={};}
+ try{ VEHICLE_REGISTRY=await (await fetch('https://raw.githubusercontent.com/V1c5nt5/stpm_gtfs/main/data/vehicle_registry.json',{cache:'no-store'})).json(); }catch(e){ VEHICLE_REGISTRY={};}
 }
 loadVehicleRegistry();
 function vehicleInfoByPlate(plate){
