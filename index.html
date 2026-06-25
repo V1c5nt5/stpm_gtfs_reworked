@@ -40,14 +40,19 @@
     <p class="launch-lead">Consulta recorridos, paraderos, horarios o buses en circulación.</p>
 
     <div class="launch-mode-grid" role="radiogroup" aria-label="Tipo de consulta">
-      <button class="launch-mode-card active" id="launch-mode-realtime" type="button" role="radio" aria-checked="true" onclick="setLaunchMode('realtime')">
+      <button class="launch-mode-card active" id="launch-mode-static" type="button" role="radio" aria-checked="true" onclick="setLaunchMode('static')">
+        <span class="launch-mode-kicker">Por fecha</span>
+        <strong>Recorridos y horarios</strong>
+        <small>Revisa la información publicada para una fecha.</small>
+      </button>
+      <button class="launch-mode-card" id="launch-mode-realtime" type="button" role="radio" aria-checked="false" onclick="setLaunchMode('realtime')">
         <span class="launch-mode-kicker">Ahora</span>
         <strong>Buses en tiempo real</strong>
         <small>Consulta buses en circulación y sus recorridos.</small>
       </button>
     </div>
 
-    <div id="static-launch-options" hidden>
+    <div id="static-launch-options">
       <div class="fg launch-field">
         <label for="dataset-date-select">Fecha de publicación</label>
         <select id="dataset-date-select" onchange="updateStartDatasetAvailability()">
@@ -70,7 +75,7 @@
     </div>
 
     <button class="primary-action launch-action" id="btn-load-dataset" type="button" onclick="loadSelectedLaunchMode()" disabled>
-      <span id="btn-load-dataset-label">Abrir buses en tiempo real</span>
+      <span id="btn-load-dataset-label">Abrir recorridos y horarios</span>
       <span aria-hidden="true">→</span>
     </button>
 
