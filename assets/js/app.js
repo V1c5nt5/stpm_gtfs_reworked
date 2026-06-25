@@ -3035,6 +3035,7 @@ function switchTab(tab){
   var label=document.getElementById('map-context-label');
   if(label) label.textContent=mapContextLabel(tab);
 }
+);
 function resetCurrentMapView(){
   if(CURRENT_MAP_MODE==='ruta'){
     fitRouteMap();
