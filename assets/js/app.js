@@ -1202,13 +1202,29 @@ document.addEventListener('input',function(e){
 
 
 
+var TOMTOM_TRAFFIC_KEY='CYVlDDqeaICKsTKOPsGJNBv1l1gMGggq';
+var trafficLayer=null;
+
 function addInstitutionalTiles(map,maxZoom){
-  return L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{
+  var baseLayer=L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{
     attribution:'&copy; OpenStreetMap contributors',
     maxZoom:maxZoom||19,
     updateWhenIdle:true,
     keepBuffer:3
   }).addTo(map);
+
+  trafficLayer=L.tileLayer(
+    'https://api.tomtom.com/traffic/map/4/tile/flow/relative/{z}/{x}/{y}.png?key='+TOMTOM_TRAFFIC_KEY,
+    {
+      attribution:'TomTom Traffic',
+      opacity:0.55,
+      maxZoom:maxZoom||19,
+      updateWhenIdle:true,
+      keepBuffer:2
+    }
+  ).addTo(map);
+
+  return baseLayer;
 }
 function fitRouteMap(){
   if(leafMap && routeMapBounds && routeMapBounds.isValid()){
@@ -2473,7 +2489,8 @@ function enrichBusFeature(feature){
   var properties=feature.properties||{};
   var rawRoute=String(properties.route_code||'').trim();
   var deco=findBusDeco(rawRoute);
-  var publicRoute=String(deco&&deco.CODIGO_USUARIO||'Sin recorrido').trim()||rawRoute||'Sin recorrido';
+  var fallbackRoute=internalCode||plate||rawRoute||'Servicio no identificado';
+  var publicRoute=String(deco&&deco.CODIGO_USUARIO||fallbackRoute).trim()||fallbackRoute;
   var sourceOperatorKey=String(properties.operator===undefined||properties.operator===null?'':properties.operator).trim();
   var decoOperatorKey=deco?busOperatorKeyFromDeco(deco):'';
   var operatorKey=decoOperatorKey && decoOperatorKey!=='sin-operador'
