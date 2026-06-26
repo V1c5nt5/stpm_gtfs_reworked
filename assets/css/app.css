@@ -1,27 +1,32 @@
 /* v2.2.1 — interfaz institucional y analítica */
 *,*::before,*::after{box-sizing:border-box}
-:root{
-  --red:#98251c;
-  --red-dark:#741a14;
-  --red-soft:#f8ecea;
-  --ink:#172027;
-  --muted:#64717b;
-  --muted-2:#89949d;
-  --bg:#f4f6f7;
-  --surface:#fff;
-  --surface-2:#f8fafb;
-  --line:#dfe5e8;
-  --line-strong:#ccd5da;
-  --blue:#2563eb;
-  --green:#15803d;
-  --amber:#b45309;
-  --danger:#b42318;
-  --sidebar:#20282e;
-  --sidebar-muted:#aab4bb;
-  --radius:14px;
-  --radius-sm:9px;
-  --shadow:0 10px 30px rgba(23,32,39,.07);
-  --sidebar-width:238px;
+:root {
+  /* Paleta Modo Oscuro - Centro de Control */
+  --bg: #0b0f19;           /* Fondo general de la app (Azul noche profundo) */
+  --surface: #151b2c;      /* Paneles laterales y tarjetas flotantes */
+  --surface-2: #1e2640;    /* Elementos secundarios o estados hover */
+  --ink: #f3f4f6;          /* Texto principal (Blanco grisáceo de alta lectura) */
+  --muted: #9ca3af;        /* Texto secundario y etiquetas */
+  --muted-2: #6b7280;      /* Texto deshabilitado o bordes muy suaves */
+  --line: #24304f;         /* Líneas divisorias sutiles */
+  --line-strong: #3b4f7c;  /* Bordes de inputs y botones enfocados */
+  
+  /* Colores de acento e indicadores ajustados para fondo oscuro */
+  --red: #ef4444;          /* Rojo brillante (alerta/identidad RED) */
+  --red-dark: #b91c1c;
+  --red-soft: #3b1414;     /* Fondos sutiles de selección activa */
+  --blue: #3b82f6;
+  --green: #22c55e;        /* Buses eléctricos */
+  --amber: #f59e0b;        /* Advertencias / Buses pegados */
+  --danger: #f87171;
+  
+  /* Estructura básica */
+  --sidebar: #0b0f19;
+  --sidebar-muted: #6b7280;
+  --radius: 14px;
+  --radius-sm: 9px;
+  --shadow: 0 10px 30px rgba(0, 0, 0, 0.5); /* Sombras más oscuras */
+  --sidebar-width: 238px;
 }
 html{scroll-behavior:smooth}
 body{
@@ -1250,3 +1255,16 @@ body[data-map-mode="ruta"] .bus-map-legend{display:flex}
 }
 
 .route-live-bus-status[hidden]{display:none!important}
+
+/* Correcciones para Inputs y Selectores en Modo Oscuro */
+input, select, textarea {
+  background-color: var(--surface) !important;
+  color: var(--ink) !important;
+  border: 1px solid var(--line) !important;
+}
+input::placeholder {
+  color: var(--muted) !important;
+}
+.bus-search-wrap input {
+  background-color: var(--surface-2) !important;
+}
