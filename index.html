@@ -5,13 +5,13 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="theme-color" content="#8f2018">
 <title>Mapa Operativo RED — Santiago</title>
-<!-- v3.0.0 public — buses en tiempo real con filtros avanzados y panel de resumen -->
+<!-- v2.2.4 public -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<link rel="stylesheet" href="assets/css/app.css?v=3.0.0">
+<link rel="stylesheet" href="assets/css/app.css?v=2.2.6">
 </head>
 <body>
 
@@ -186,7 +186,7 @@
           </div>
         </section>
 
-        <!-- BUSES EN OPERACIÓN (v3.0.0) -->
+        <!-- BUSES EN OPERACIÓN -->
         <section id="tab-buses" class="page-panel" style="display:none">
           <div class="panel-intro">
             <span class="section-kicker">Ubicación actual</span>
@@ -216,41 +216,6 @@
             </div>
           </div>
 
-          <!-- NUEVOS FILTROS v3.0.0 -->
-          <div class="filter-stack" style="margin-top:10px">
-            <div class="filter-row">
-              <div class="fg">
-                <label for="bus-type-filter">Tipo de bus</label>
-                <select id="bus-type-filter">
-                  <option value="__all">Todos los tipos</option>
-                </select>
-              </div>
-              <div class="fg">
-                <label for="bus-tech-filter">Tecnología</label>
-                <select id="bus-tech-filter">
-                  <option value="__all">Todas</option>
-                </select>
-              </div>
-            </div>
-            <div class="filter-row">
-              <div class="fg">
-                <label for="bus-year-filter">Año de fabricación</label>
-                <select id="bus-year-filter">
-                  <option value="__all">Todos</option>
-                </select>
-              </div>
-              <div class="fg">
-                <label>Velocidad (km/h)</label>
-                <div style="display:flex;gap:6px;align-items:center">
-                  <input type="number" id="bus-speed-min" placeholder="Mín" style="width:70px" value="0">
-                  <span>–</span>
-                  <input type="number" id="bus-speed-max" placeholder="Máx" style="width:70px" value="999">
-                </div>
-              </div>
-            </div>
-          </div>
-          <!-- FIN NUEVOS FILTROS -->
-
           <div class="segmented-control bus-dir-tabs" aria-label="Sentido del recorrido">
             <button class="map-dir-btn active" id="bus-dir-all" type="button" onclick="setBusDirection('all')">Todos</button>
             <button class="map-dir-btn" id="bus-dir-i" type="button" onclick="setBusDirection('I')">Ida</button>
@@ -259,18 +224,12 @@
 
           <div class="panel-actions">
             <button class="primary-action compact-action" type="button" onclick="loadBusData(true)">Actualizar</button>
-          </div>
+                      </div>
 
           <div id="bus-status" class="panel-status bus-status" aria-live="polite">
             <strong>Datos aún no cargados</strong>
             <span>Las posiciones se cargarán al abrir esta vista.</span>
           </div>
-
-          <!-- NUEVO PANEL DE RESUMEN v3.0.0 -->
-          <div id="bus-summary" class="panel-block" style="margin-top:16px">
-            <!-- se llena dinámicamente -->
-          </div>
-          <!-- FIN PANEL DE RESUMEN -->
         </section>
 
         <!-- TRAZADO -->
@@ -543,6 +502,6 @@
 
 </div>
 
-<script src="assets/js/app.js?v=3.0.0"></script>
+<script src="assets/js/app.js?v=2.2.6"></script>
 </body>
 </html>
