@@ -193,7 +193,7 @@
           <div class="panel-intro monitor-intro">
             <span class="section-kicker">Monitoreo</span>
             <h3>Operación en tiempo real sin mapa</h3>
-            <p>Panel completo de control para buses en circulación, con reloj en vivo, demanda diaria, cumplimiento GTFS y alertas operativas.</p>
+            <p>Panel completo de control para buses en circulación, con reloj en vivo, actualización automática cada 1 minuto, demanda horaria, cumplimiento GTFS y alertas operativas.</p>
           </div>
 
           <div class="monitor-head monitor-full-head">
@@ -203,7 +203,7 @@
             </div>
             <div id="monitor-status" class="panel-status bus-status monitor-status-card" aria-live="polite">
               <strong>Esperando información</strong>
-              <span>Se actualizará cuando se carguen los buses en circulación.</span>
+              <span>Se actualiza en vivo y vuelve a consultar los buses cada 1 minuto.</span>
             </div>
           </div>
 
@@ -232,8 +232,8 @@
               <div class="card-head">
                 <div>
                   <span class="card-kicker">Demanda diaria</span>
-                  <h3>Buses necesarios vs buses visibles ahora (00:00 a 24:00)</h3>
-                  <p>La línea de referencia muestra el conteo actual de buses detectados. La barra muestra la demanda estimada por hora según GTFS.</p>
+                  <h3>Buses que deberían haber por hora (00:00 a 24:00)</h3>
+                  <p>La barra muestra cuántos buses deberían operar por hora según GTFS. La línea marca el conteo actual detectado en vivo.</p>
                 </div>
               </div>
               <div class="chart-wrap monitor-demand-wrap"><canvas id="monitor-demand-chart"></canvas></div>

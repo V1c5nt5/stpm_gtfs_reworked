@@ -35,7 +35,7 @@ function freshData(){
   };
 }
 var freqChart = null, stopChart = null, overviewChart = null, monitorTechChart = null, monitorTypeChart = null, monitorDemandChart = null;
-var monitorRefreshTimer = null;
+var monitorRefreshTimer = null, monitorDataTimer = null;
 var leafMap = null, layerIda = null, layerReg = null, layerStops = null, routeMapBounds = null;
 var BUS_ENDPOINTS = [
   'https://velocidades.seguimos.cl/?all-buses-data=1',
@@ -986,7 +986,7 @@ function drawMonitorDemandChart(canvas, chartRef, labels, needed, currentCount){
       datasets:[
         {
           type:'bar',
-          label:'Buses necesarios',
+          label:'Buses que deberían haber',
           data:needed,
           backgroundColor:'rgba(143,32,24,.28)',
           borderColor:'#8f2018',
@@ -997,7 +997,7 @@ function drawMonitorDemandChart(canvas, chartRef, labels, needed, currentCount){
         },
         {
           type:'line',
-          label:'Buses visibles ahora',
+          label:'Buses actuales detectados',
           data:labels.map(function(){ return currentCount; }),
           borderColor:'#2563eb',
           backgroundColor:'rgba(37,99,235,.12)',
@@ -1058,6 +1058,7 @@ function buildMonitoringSummary(){
   var currentHour=now.getHours();
   var matches=[];
   var hourlyNeeded=buildHourlyDemand(trips);
+  var hourlyTotals=hourlyNeeded.slice();
   trips.forEach(function(trip){
     var route=DATA.routes[trip.route_id]||{};
     var se=tripStartEndSafe(trip.trip_id);
@@ -1105,6 +1106,7 @@ function buildMonitoringSummary(){
     buses:buses,
     techs:arrayTopCounts(techs),
     types:arrayTopCounts(types),
+    hourlyTotals:hourlyTotals,
     statuses:statuses,
     recognizedCount:recognizedCount,
     recentCount:recentCount,
@@ -1193,15 +1195,24 @@ function renderMonitoring(){
 function startMonitorRefresh(){
   stopMonitorRefresh();
   if(CURRENT_MAP_MODE!=='monitor') return;
+  renderMonitoring();
   monitorRefreshTimer=setInterval(function(){
     if(document.hidden || CURRENT_MAP_MODE!=='monitor') return;
     renderMonitoring();
   },1000);
+  monitorDataTimer=setInterval(function(){
+    if(document.hidden || CURRENT_MAP_MODE!=='monitor') return;
+    loadBusData(true);
+  },60000);
 }
 function stopMonitorRefresh(){
   if(monitorRefreshTimer){
     clearInterval(monitorRefreshTimer);
     monitorRefreshTimer=null;
+  }
+  if(monitorDataTimer){
+    clearInterval(monitorDataTimer);
+    monitorDataTimer=null;
   }
 }
 
