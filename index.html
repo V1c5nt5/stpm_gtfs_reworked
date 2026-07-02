@@ -5,13 +5,13 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="theme-color" content="#8f2018">
 <title>Mapa Operativo RED — Santiago</title>
-<!-- v2.2.4 public -->
+<!-- v2.3.0 public -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<link rel="stylesheet" href="assets/css/app.css?v=2.3.0">
+<link rel="stylesheet" href="assets/css/app.css?v=2.4.0">
 </head>
 <body>
 
@@ -187,48 +187,83 @@
         </section>
 
 
+        
         <!-- MONITOREO -->
         <section id="tab-monitor" class="page-panel" style="display:none">
-          <div class="panel-intro">
+          <div class="panel-intro monitor-intro">
             <span class="section-kicker">Monitoreo</span>
-            <h3>Operación en vivo</h3>
-            <p>Distribución por tipo de bus, validación en recorrido y registros que coinciden con la hora actual.</p>
+            <h3>Operación en tiempo real sin mapa</h3>
+            <p>Panel completo de control para buses en circulación, con reloj en vivo, demanda diaria, cumplimiento GTFS y alertas operativas.</p>
           </div>
 
-          <div class="monitor-head">
-            <div class="monitor-clock" id="monitor-clock">Hora actual: --:--</div>
-            <div id="monitor-status" class="panel-status bus-status" aria-live="polite">
+          <div class="monitor-head monitor-full-head">
+            <div class="monitor-clock-block">
+              <div class="monitor-clock" id="monitor-clock">Hora actual: --:--:--</div>
+              <div class="monitor-date" id="monitor-date">--</div>
+            </div>
+            <div id="monitor-status" class="panel-status bus-status monitor-status-card" aria-live="polite">
               <strong>Esperando información</strong>
               <span>Se actualizará cuando se carguen los buses en circulación.</span>
             </div>
           </div>
 
-          <div class="stats-row compact-stats" id="monitor-stats"></div>
+          <div class="stats-row compact-stats monitor-stats-row" id="monitor-stats"></div>
 
           <div class="sheet-grid two monitor-chart-grid">
             <article class="sheet-card">
-              <div class="card-head"><div><span class="card-kicker">Tecnología</span><h3>VPE, EURO III y otras</h3></div></div>
+              <div class="card-head">
+                <div>
+                  <span class="card-kicker">Tecnología</span>
+                  <h3>VPE, EURO III y otras</h3>
+                </div>
+              </div>
               <div class="chart-wrap monitor-chart-wrap"><canvas id="monitor-tech-chart"></canvas></div>
             </article>
             <article class="sheet-card">
-              <div class="card-head"><div><span class="card-kicker">Tipo de flota</span><h3>B1, B2, B2P, C2 y más</h3></div></div>
+              <div class="card-head">
+                <div>
+                  <span class="card-kicker">Tipo de flota</span>
+                  <h3>B1, B2, B2P, C2 y más</h3>
+                </div>
+              </div>
               <div class="chart-wrap monitor-chart-wrap"><canvas id="monitor-type-chart"></canvas></div>
+            </article>
+            <article class="sheet-card span-2">
+              <div class="card-head">
+                <div>
+                  <span class="card-kicker">Demanda diaria</span>
+                  <h3>Buses necesarios vs buses visibles ahora (00:00 a 24:00)</h3>
+                  <p>La línea de referencia muestra el conteo actual de buses detectados. La barra muestra la demanda estimada por hora según GTFS.</p>
+                </div>
+              </div>
+              <div class="chart-wrap monitor-demand-wrap"><canvas id="monitor-demand-chart"></canvas></div>
             </article>
           </div>
 
           <div class="sheet-grid two monitor-lists-grid">
             <article class="sheet-card">
-              <div class="card-head"><div><span class="card-kicker">Hora actual</span><h3>Recorridos que comienzan o terminan ahora</h3></div></div>
+              <div class="card-head">
+                <div>
+                  <span class="card-kicker">Hora actual</span>
+                  <h3>Recorridos de buses que comienzan o terminan ahora</h3>
+                </div>
+              </div>
               <div id="monitor-time-list" class="monitor-list"></div>
             </article>
             <article class="sheet-card">
-              <div class="card-head"><div><span class="card-kicker">Monitoreo adicional</span><h3>Control de la operación</h3></div></div>
+              <div class="card-head">
+                <div>
+                  <span class="card-kicker">Calidad y control</span>
+                  <h3>Cumplimiento GTFS y otros chequeos</h3>
+                </div>
+              </div>
               <div id="monitor-alert-list" class="monitor-list"></div>
             </article>
           </div>
         </section>
 
         <!-- BUSES EN OPERACIÓN -->
+
         <section id="tab-buses" class="page-panel" style="display:none">
           <div class="panel-intro">
             <span class="section-kicker">Ubicación actual</span>
@@ -545,6 +580,6 @@
 
 </div>
 
-<script src="assets/js/app.js?v=2.2.6"></script>
+<script src="assets/js/app.js?v=2.4.0"></script>
 </body>
 </html>

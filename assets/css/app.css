@@ -1252,29 +1252,48 @@ body[data-map-mode="ruta"] .bus-map-legend{display:flex}
 .route-live-bus-status[hidden]{display:none!important}
 
 
+
 /* Monitoreo */
-.monitor-head{
+.monitor-intro h3{font-size:22px}
+.monitor-full-head{
+  grid-template-columns:minmax(0,1fr) minmax(0,1.2fr);
+  gap:14px;
+}
+.monitor-clock-block{
   display:grid;
-  grid-template-columns:minmax(0,1fr) minmax(0,1.3fr);
-  gap:12px;
-  align-items:start;
-  margin:10px 0 12px;
+  gap:8px;
 }
 .monitor-clock{
   display:flex;
   align-items:center;
   justify-content:flex-start;
-  min-height:56px;
-  padding:14px 16px;
+  min-height:64px;
+  padding:16px 18px;
   border:1px solid var(--line-strong);
-  border-radius:14px;
+  border-radius:16px;
   background:linear-gradient(180deg,#fff,#f9fbfc);
   color:var(--ink);
-  font-size:18px;
-  font-weight:800;
+  font-size:24px;
+  font-weight:850;
+  letter-spacing:-.02em;
 }
+.monitor-date{
+  padding:0 18px;
+  color:var(--muted);
+  font-size:12px;
+  font-weight:600;
+  text-transform:capitalize;
+}
+.monitor-status-card{
+  align-self:stretch;
+  min-height:100%;
+}
+.monitor-status-card strong{font-size:14px}
+.monitor-status-card span{font-size:12px;line-height:1.45}
+.monitor-stats-row{margin-top:2px}
 .monitor-chart-grid,.monitor-lists-grid{margin-top:14px}
 .monitor-chart-wrap{min-height:300px}
+.monitor-demand-wrap{min-height:330px}
 .monitor-list{
   display:grid;
   gap:10px;
@@ -1311,6 +1330,46 @@ body[data-map-mode="ruta"] .bus-map-legend{display:flex}
   font-size:12px;
   line-height:1.5;
 }
+body[data-map-mode="monitor"] .map-stack,
+body.monitor-fullscreen .map-stack{display:none}
+body[data-map-mode="monitor"] .context-panel,
+body.monitor-fullscreen .context-panel{
+  left:14px;
+  right:14px;
+  width:auto;
+  top:14px;
+  bottom:14px;
+}
+body[data-map-mode="monitor"] .context-panel.is-collapsed,
+body.monitor-fullscreen .context-panel.is-collapsed{
+  left:14px;
+}
+body[data-map-mode="monitor"] .context-panel-head{
+  min-height:72px;
+}
+body[data-map-mode="monitor"] .context-panel-scroll{
+  padding:16px 16px 18px;
+}
+body[data-map-mode="monitor"] .panel-collapse,
+body.monitor-fullscreen .panel-collapse{
+  display:none;
+}
+body[data-map-mode="monitor"] .map-top-tools,
+body.monitor-fullscreen .map-top-tools,
+body[data-map-mode="monitor"] .map-global-legend,
+body.monitor-fullscreen .map-global-legend,
+body[data-map-mode="monitor"] .traffic-map-legend,
+body.monitor-fullscreen .traffic-map-legend,
+body[data-map-mode="monitor"] .bus-map-legend,
+body.monitor-fullscreen .bus-map-legend{
+  display:none!important;
+}
+body[data-map-mode="monitor"] .geo-workspace{
+  inset:var(--geo-header) 0 var(--geo-dock) 0;
+}
 @media(max-width:900px){
-  .monitor-head{grid-template-columns:1fr}
+  .monitor-full-head{grid-template-columns:1fr}
+  .monitor-clock{font-size:21px}
+  body[data-map-mode="monitor"] .context-panel,
+  body.monitor-fullscreen .context-panel{left:8px;right:8px;top:8px;bottom:8px}
 }

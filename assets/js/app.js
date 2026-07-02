@@ -34,7 +34,7 @@ function freshData(){
     availableSources:{gtfs:false,deco:false,param:false}, decoCompatible:false, decoDateGapDays:null, analytics:null
   };
 }
-var freqChart = null, stopChart = null, overviewChart = null, monitorTechChart = null, monitorTypeChart = null;
+var freqChart = null, stopChart = null, overviewChart = null, monitorTechChart = null, monitorTypeChart = null, monitorDemandChart = null;
 var monitorRefreshTimer = null;
 var leafMap = null, layerIda = null, layerReg = null, layerStops = null, routeMapBounds = null;
 var BUS_ENDPOINTS = [
@@ -932,6 +932,7 @@ function doughnutColors(count){
   for(var i=0;i<count;i++) out.push(palette[i%palette.length]);
   return out;
 }
+
 function drawMonitorDoughnut(canvas, chartRef, labels, values, title){
   if(!canvas || !window.Chart) return chartRef;
   if(chartRef) chartRef.destroy();
@@ -947,11 +948,88 @@ function drawMonitorDoughnut(canvas, chartRef, labels, values, title){
     }
   });
 }
+
+function isMetroRoute(route){
+  if(!route) return false;
+  var short=normalizeBusKey(route.route_short_name||route.route_id||'');
+  var long=normalizeBusKey(route.route_long_name||'');
+  return /^L[1-6]A?$/.test(short) || long.indexOf('METRO')!==-1 || long.indexOf('SUBTERRANEO')!==-1 || long.indexOf('SUBTE')!==-1;
+}
+function isBusRoute(route){
+  return !!route && !isMetroRoute(route);
+}
+function activeBusTripsForToday(serviceIds){
+  return routeDeparturesForServices(serviceIds).filter(function(trip){
+    return isBusRoute(DATA.routes[trip.route_id]);
+  });
+}
+function buildHourlyDemand(trips){
+  var hourly=Array(24).fill(0);
+  (trips||[]).forEach(function(trip){
+    var se=tripStartEndSafe(trip.trip_id);
+    if(!se) return;
+    var inst=Math.max(1, estimatedTripInstances(trip)||1);
+    for(var hour=0; hour<24; hour++){
+      var start=hour*3600;
+      var end=start+3600;
+      if(se.departure < end && se.arrival >= start) hourly[hour]+=inst;
+    }
+  });
+  return hourly;
+}
+function drawMonitorDemandChart(canvas, chartRef, labels, needed, currentCount){
+  if(!canvas || !window.Chart) return chartRef;
+  if(chartRef) chartRef.destroy();
+  return new Chart(canvas.getContext('2d'),{
+    data:{
+      labels:labels,
+      datasets:[
+        {
+          type:'bar',
+          label:'Buses necesarios',
+          data:needed,
+          backgroundColor:'rgba(143,32,24,.28)',
+          borderColor:'#8f2018',
+          borderWidth:1,
+          borderRadius:6,
+          barPercentage:.85,
+          categoryPercentage:.88
+        },
+        {
+          type:'line',
+          label:'Buses visibles ahora',
+          data:labels.map(function(){ return currentCount; }),
+          borderColor:'#2563eb',
+          backgroundColor:'rgba(37,99,235,.12)',
+          pointRadius:0,
+          tension:.32,
+          borderWidth:2.5,
+          fill:false
+        }
+      ]
+    },
+    options:{
+      responsive:true,
+      maintainAspectRatio:false,
+      interaction:{mode:'index',intersect:false},
+      scales:{
+        x:{grid:{display:false},ticks:{autoSkip:false,maxRotation:0,minRotation:0}},
+        y:{beginAtZero:true,grid:{color:'rgba(100,113,123,.14)'}}
+      },
+      plugins:{
+        legend:{position:'bottom',labels:{boxWidth:12,boxHeight:12,usePointStyle:true}},
+        tooltip:{callbacks:{label:function(ctx){return ' '+ctx.dataset.label+': '+ctx.parsed.y+' buses';}}}
+      }
+    }
+  });
+}
+
+
 function buildMonitoringSummary(){
   var buses=BUS_STATE.features||[];
   var vehicles=buses.map(function(bus){ return {bus:bus, info:vehicleInfoByPlate(bus.plate)||{}}; });
   var techs={}, types={}, operators={}, statuses={};
-  var recentCount=0, recognizedCount=0, unknownPlateCount=0;
+  var recentCount=0, recognizedCount=0, unknownPlateCount=0, validPlateCount=0, busRouteCount=0;
   vehicles.forEach(function(item){
     var bus=item.bus, info=item.info||{};
     var tech=busTechBucket(info);
@@ -963,16 +1041,23 @@ function buildMonitoringSummary(){
     statuses[valid]=(statuses[valid]||0)+1;
     if(valid==='validado') recognizedCount++;
     if(!bus.plate || bus.plate==='PATENTE NO INFORMADA') unknownPlateCount++;
+    else validPlateCount++;
     if(bus.timestamp && (Date.now()-bus.timestamp.getTime())<=20*60*1000) recentCount++;
+    var r=DATA.routes && DATA.routes[bus.routeKey];
+    if(r && isBusRoute(r)) busRouteCount++;
   });
 
   var now=new Date();
   var serviceIds=todayServiceIds(now);
-  var trips=routeDeparturesForServices(serviceIds);
+  var trips=activeBusTripsForToday(serviceIds);
   var plannedDepartures=trips.reduce(function(sum, trip){ return sum + estimatedTripInstances(trip); }, 0);
-  var routeCatalog=Object.keys(DATA.routes||{}).length;
+  var routeCatalog=Object.keys(DATA.routes||{}).filter(function(routeId){
+    return isBusRoute(DATA.routes[routeId]);
+  }).length;
   var currentMinute=now.getHours()*60+now.getMinutes();
+  var currentHour=now.getHours();
   var matches=[];
+  var hourlyNeeded=buildHourlyDemand(trips);
   trips.forEach(function(trip){
     var route=DATA.routes[trip.route_id]||{};
     var se=tripStartEndSafe(trip.trip_id);
@@ -988,17 +1073,32 @@ function buildMonitoringSummary(){
   });
   matches.sort(function(a,b){ return a.route.localeCompare(b.route, undefined, {numeric:true, sensitivity:'base'}) || a.kind.localeCompare(b.kind); });
 
+  var totalBuses=buses.length;
+  var routeValidationPct=percent(recognizedCount,totalBuses);
+  var recentPct=percent(recentCount,totalBuses);
+  var platePct=percent(validPlateCount,totalBuses);
+  var demandNow=hourlyNeeded[currentHour]||0;
+  var coverageNow=demandNow>0 ? Math.round((totalBuses/demandNow)*100) : 0;
+  var gtfsTripsWithTimes=trips.filter(function(trip){ return !!tripStartEndSafe(trip.trip_id); }).length;
+  var schedulePct=percent(gtfsTripsWithTimes,trips.length);
+  var qualityScore=Math.round((routeValidationPct + recentPct + platePct + schedulePct) / 4);
+
   var alerts=[];
   var staleCount=vehicles.filter(function(item){ return item.bus.timestamp && (Date.now()-item.bus.timestamp.getTime())>20*60*1000; }).length;
   var noCatalogCount=buses.length-recognizedCount;
   var byOperator=arrayTopCounts(operators).slice(0,5);
+  var busRoutesActive=unique(trips.map(function(t){ return t.route_id; })).length;
+  var tripsWithIssues=trips.length-gtfsTripsWithTimes;
   if(!serviceIds.length) alerts.push({label:'Sin servicio activo para hoy', value:'Revisa la fecha del feed GTFS o la configuración del calendario.'});
-  alerts.push({label:'Buses con señal reciente', value:recentCount+'/'+buses.length+' en los últimos 20 minutos'});
-  alerts.push({label:'Buses sin recorrido reconocido', value:noCatalogCount+' unidades'});
-  alerts.push({label:'Buses sin patente informada', value:unknownPlateCount+' unidades'});
-  alerts.push({label:'Recorridos del catálogo', value:routeCatalog+' códigos cargados'});
+  alerts.push({label:'Cobertura GTFS', value:qualityScore+'%', detail:'Promedio entre coincidencia de catálogo, señal reciente, patente y horarios completos.'});
+  alerts.push({label:'Recorridos de buses activos', value:busRoutesActive.toLocaleString('es-CL')+' rutas', detail:'Se excluyen líneas de metro como L1, L2, L3, L4, L4A, L5 y L6.'});
+  alerts.push({label:'Patentes válidas', value:platePct+'%', detail:validPlateCount.toLocaleString('es-CL')+' unidades con patente informada.'});
+  alerts.push({label:'Señal reciente', value:recentPct+'%', detail:recentCount.toLocaleString('es-CL')+' buses con actualización en los últimos 20 minutos.'});
+  alerts.push({label:'Buses sin catálogo', value:noCatalogCount.toLocaleString('es-CL')+' unidades', detail:'Quedan fuera de los recorridos reconocidos, aunque siguen siendo visibles.'});
+  if(staleCount>0) alerts.push({label:'Buses con señal antigua', value:staleCount.toLocaleString('es-CL')+' unidades', detail:'Sirve para detectar cortes de transmisión.'});
+  if(tripsWithIssues>0) alerts.push({label:'Viajes sin horario completo', value:tripsWithIssues.toLocaleString('es-CL')+' viajes', detail:'El GTFS publicado no trae salida y llegada completas en varios recorridos.'});
   if(byOperator.length){
-    alerts.push({label:'Operadores con más buses', value:byOperator.map(function(x){ return x.label+' · '+x.value; }).join(' · ')});
+    alerts.push({label:'Operador más cargado', value:byOperator[0].label+' · '+byOperator[0].value+' buses', detail:'Primer corte rápido de la operación en vivo.'});
   }
 
   return {
@@ -1015,28 +1115,45 @@ function buildMonitoringSummary(){
     alerts:alerts,
     now:now,
     currentMinute:currentMinute,
+    currentHour:currentHour,
+    hourlyNeeded:hourlyNeeded,
+    demandNow:demandNow,
+    coverageNow:coverageNow,
+    qualityScore:qualityScore,
+    routeValidationPct:routeValidationPct,
+    recentPct:recentPct,
+    platePct:platePct,
+    schedulePct:schedulePct,
+    validPlateCount:validPlateCount,
+    busRoutesActive:busRoutesActive,
+    busRouteCount:busRouteCount,
     byOperator:byOperator,
-    routeCatalog:routeCatalog
+    routeCatalog:routeCatalog,
+    noCatalogCount:noCatalogCount
   };
 }
 function renderMonitoring(){
   var data=buildMonitoringSummary();
   var clock=document.getElementById('monitor-clock');
   if(clock){
-    clock.textContent='Hora actual: '+new Intl.DateTimeFormat('es-CL',{hour:'2-digit',minute:'2-digit',second:'2-digit'}).format(data.now);
+    clock.textContent='Hora actual: '+new Intl.DateTimeFormat('es-CL',{weekday:'long',day:'2-digit',month:'long',year:'numeric',hour:'2-digit',minute:'2-digit',second:'2-digit'}).format(data.now);
+  }
+  var dateEl=document.getElementById('monitor-date');
+  if(dateEl){
+    dateEl.textContent='Buses en operación y control GTFS · '+new Intl.DateTimeFormat('es-CL',{timeZone:'America/Santiago',weekday:'long',day:'numeric',month:'long'}).format(data.now);
   }
   var status=document.getElementById('monitor-status');
   if(status){
-    var serviceLabelNow=data.serviceIds.length ? data.serviceIds.map(serviceLabel).join(' · ') : 'Sin servicio activo';
-    status.innerHTML='<strong>'+busCountText(data.buses.length)+' en circulación</strong><span>'+esc(serviceLabelNow)+' · '+esc(data.recognizedCount+' validados en catálogo')+' · '+esc(data.plannedDepartures+' salidas programadas hoy')+'</span>';
+    status.innerHTML='<strong>'+busCountText(data.buses.length)+' visibles ahora</strong><span>'+esc((data.demandNow||0).toLocaleString('es-CL'))+' buses requeridos a esta hora · '+esc(data.coverageNow+'% de cobertura estimada')+' · '+esc(data.qualityScore+'% de cumplimiento GTFS')+'</span>';
   }
   var stats=document.getElementById('monitor-stats');
   if(stats){
     stats.innerHTML=[
       ['Buses actuales', data.buses.length.toLocaleString('es-CL'), 'en circulación ahora'],
-      ['Reconocidos en recorrido', data.recognizedCount.toLocaleString('es-CL'), 'con catálogo vigente'],
-      ['Salidas programadas hoy', data.plannedDepartures.toLocaleString('es-CL'), data.serviceIds.length?'según calendario del día':'sin calendario activo'],
-      ['Señal reciente', data.recentCount.toLocaleString('es-CL'), 'últimos 20 minutos']
+      ['Requeridos hoy', data.plannedDepartures.toLocaleString('es-CL'), 'según GTFS del día'],
+      ['Validación catálogo', data.routeValidationPct.toLocaleString('es-CL')+'%', 'coincidencia con recorrido'],
+      ['Señal reciente', data.recentPct.toLocaleString('es-CL')+'%', 'últimos 20 minutos'],
+      ['Cumplimiento GTFS', data.qualityScore.toLocaleString('es-CL')+'%', 'índice operativo general']
     ].map(function(x){ return '<div class="stat-card"><div class="lbl">'+esc(x[0])+'</div><div class="val">'+esc(x[1])+'</div><div class="sub">'+esc(x[2])+'</div></div>'; }).join('');
   }
 
@@ -1048,11 +1165,17 @@ function renderMonitoring(){
   if(typeCanvas){
     monitorTypeChart=drawMonitorDoughnut(typeCanvas, monitorTypeChart, data.types.map(function(x){return x.label;}), data.types.map(function(x){return x.value;}), 'Tipo');
   }
+  var demandCanvas=document.getElementById('monitor-demand-chart');
+  if(demandCanvas){
+    var labels=[];
+    for(var i=0;i<24;i++) labels.push(String(i).padStart(2,'0')+':00');
+    monitorDemandChart=drawMonitorDemandChart(demandCanvas, monitorDemandChart, labels, data.hourlyNeeded, data.buses.length);
+  }
 
   var timeList=document.getElementById('monitor-time-list');
   if(timeList){
     if(!data.matches.length){
-      timeList.innerHTML='<div class="monitor-empty">No hay recorridos que comiencen o terminen exactamente a esta hora.</div>';
+      timeList.innerHTML='<div class="monitor-empty">No hay recorridos de buses que comiencen o terminen exactamente a esta hora.</div>';
     }else{
       timeList.innerHTML=data.matches.slice(0,12).map(function(item){
         return '<div class="monitor-row"><strong>'+esc(item.kind)+' · '+esc(item.time)+'</strong><span>'+esc(item.route)+' · '+esc(item.long||'Sin nombre')+'</span><small>'+esc(item.service)+' · '+esc(item.dir)+'</small></div>';
@@ -1062,13 +1185,9 @@ function renderMonitoring(){
 
   var alertList=document.getElementById('monitor-alert-list');
   if(alertList){
-    alertList.innerHTML=[
-      '<div class="monitor-row"><strong>Buses sin catálogo</strong><span>'+esc((data.buses.length-data.recognizedCount).toLocaleString('es-CL'))+' unidades no coinciden con un recorrido reconocido</span><small>Se consideran solo para control operativo.</small></div>',
-      '<div class="monitor-row"><strong>Buses con señal reciente</strong><span>'+esc(data.recentCount.toLocaleString('es-CL'))+' dentro de los últimos 20 minutos</span><small>Sirve para detectar caídas de transmisión.</small></div>',
-      '<div class="monitor-row"><strong>Ruta más cargada</strong><span>'+esc(data.byOperator[0] ? data.byOperator[0].label+' · '+data.byOperator[0].value+' buses' : 'Sin datos suficientes')+'</span><small>Primer corte de la operación en vivo.</small></div>'
-    ].concat(data.alerts.map(function(item){
-      return '<div class="monitor-row"><strong>'+esc(item.label)+'</strong><span>'+esc(item.value)+'</span><small>Monitoreo operativo</small></div>';
-    })).join('');
+    alertList.innerHTML=data.alerts.map(function(item){
+      return '<div class="monitor-row"><strong>'+esc(item.label)+'</strong><span>'+esc(item.value)+'</span><small>'+esc(item.detail||'Monitoreo operativo')+'</small></div>';
+    }).join('');
   }
 }
 function startMonitorRefresh(){
@@ -1077,7 +1196,7 @@ function startMonitorRefresh(){
   monitorRefreshTimer=setInterval(function(){
     if(document.hidden || CURRENT_MAP_MODE!=='monitor') return;
     renderMonitoring();
-  },30000);
+  },1000);
 }
 function stopMonitorRefresh(){
   if(monitorRefreshTimer){
@@ -1085,6 +1204,7 @@ function stopMonitorRefresh(){
     monitorRefreshTimer=null;
   }
 }
+
 
 function buildUI(){
   var selR=document.getElementById('sel-route');
@@ -3113,6 +3233,7 @@ function toggleDetailsSheet(force){
     if(overviewChart) overviewChart.resize();
     if(monitorTechChart) monitorTechChart.resize();
     if(monitorTypeChart) monitorTypeChart.resize();
+    if(monitorDemandChart) monitorDemandChart.resize();
   },260);
 }
 function clearRouteLayers(){
@@ -3250,6 +3371,7 @@ function switchTab(tab){
     renderMonitoring();
     startMonitorRefresh();
   }
+  document.body.classList.toggle('monitor-fullscreen',tab==='monitor');
   if(tab==='resumen'){
     renderOverview();
     if(overviewChart) setTimeout(function(){overviewChart.resize();},80);
