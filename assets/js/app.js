@@ -35,7 +35,7 @@ function freshData(){
   };
 }
 var freqChart = null, stopChart = null, overviewChart = null, monitorTechChart = null, monitorTypeChart = null, monitorDemandChart = null;
-var monitorRefreshTimer = null, monitorDataTimer = null;
+var monitorRefreshTimer = null, monitorClockTimer = null;
 var leafMap = null, layerIda = null, layerReg = null, layerStops = null, routeMapBounds = null;
 var BUS_ENDPOINTS = [
   'https://velocidades.seguimos.cl/?all-buses-data=1',
@@ -980,30 +980,36 @@ function buildHourlyDemand(trips){
 function drawMonitorDemandChart(canvas, chartRef, labels, needed, currentCount){
   if(!canvas || !window.Chart) return chartRef;
   if(chartRef) chartRef.destroy();
+  var currentSeries = labels.map(function(){ return currentCount; });
   return new Chart(canvas.getContext('2d'),{
+    type:'line',
     data:{
       labels:labels,
       datasets:[
         {
-          type:'bar',
-          label:'Buses que deberían haber',
+          label:'Deberían haber',
           data:needed,
-          backgroundColor:'rgba(143,32,24,.28)',
           borderColor:'#8f2018',
-          borderWidth:1,
-          borderRadius:6,
-          barPercentage:.85,
-          categoryPercentage:.88
+          backgroundColor:'rgba(143,32,24,.10)',
+          pointBackgroundColor:'#8f2018',
+          pointBorderColor:'#8f2018',
+          pointRadius:3,
+          pointHoverRadius:5,
+          borderWidth:3,
+          tension:.28,
+          fill:false
         },
         {
-          type:'line',
-          label:'Buses actuales detectados',
-          data:labels.map(function(){ return currentCount; }),
+          label:'Hay ahora',
+          data:currentSeries,
           borderColor:'#2563eb',
-          backgroundColor:'rgba(37,99,235,.12)',
-          pointRadius:0,
-          tension:.32,
-          borderWidth:2.5,
+          backgroundColor:'rgba(37,99,235,.08)',
+          pointBackgroundColor:'#2563eb',
+          pointBorderColor:'#2563eb',
+          pointRadius:2,
+          pointHoverRadius:4,
+          borderWidth:3,
+          tension:.18,
           fill:false
         }
       ]
@@ -1013,7 +1019,7 @@ function drawMonitorDemandChart(canvas, chartRef, labels, needed, currentCount){
       maintainAspectRatio:false,
       interaction:{mode:'index',intersect:false},
       scales:{
-        x:{grid:{display:false},ticks:{autoSkip:false,maxRotation:0,minRotation:0}},
+        x:{grid:{display:false},ticks:{autoSkip:true,maxRotation:0,minRotation:0}},
         y:{beginAtZero:true,grid:{color:'rgba(100,113,123,.14)'}}
       },
       plugins:{
@@ -1024,6 +1030,39 @@ function drawMonitorDemandChart(canvas, chartRef, labels, needed, currentCount){
   });
 }
 
+function updateMonitorClock(){
+  var now = new Date();
+  var clock=document.getElementById('monitor-clock');
+  if(clock){
+    clock.textContent='Hora actual: '+new Intl.DateTimeFormat('es-CL',{
+      weekday:'long',day:'2-digit',month:'long',year:'numeric',
+      hour:'2-digit',minute:'2-digit',second:'2-digit',
+      timeZone:'America/Santiago'
+    }).format(now);
+  }
+  var dateEl=document.getElementById('monitor-date');
+  if(dateEl){
+    dateEl.textContent='Buses en operación y control GTFS · '+new Intl.DateTimeFormat('es-CL',{
+      timeZone:'America/Santiago',weekday:'long',day:'numeric',month:'long'
+    }).format(now);
+  }
+}
+
+function startMonitorClock(){
+  stopMonitorClock();
+  if(CURRENT_MAP_MODE!=='monitor') return;
+  updateMonitorClock();
+  monitorClockTimer=setInterval(function(){
+    if(document.hidden || CURRENT_MAP_MODE!=='monitor') return;
+    updateMonitorClock();
+  },1000);
+}
+function stopMonitorClock(){
+  if(monitorClockTimer){
+    clearInterval(monitorClockTimer);
+    monitorClockTimer=null;
+  }
+}
 
 function buildMonitoringSummary(){
   var buses=BUS_STATE.features||[];
@@ -1058,7 +1097,6 @@ function buildMonitoringSummary(){
   var currentHour=now.getHours();
   var matches=[];
   var hourlyNeeded=buildHourlyDemand(trips);
-  var hourlyTotals=hourlyNeeded.slice();
   trips.forEach(function(trip){
     var route=DATA.routes[trip.route_id]||{};
     var se=tripStartEndSafe(trip.trip_id);
@@ -1106,7 +1144,6 @@ function buildMonitoringSummary(){
     buses:buses,
     techs:arrayTopCounts(techs),
     types:arrayTopCounts(types),
-    hourlyTotals:hourlyTotals,
     statuses:statuses,
     recognizedCount:recognizedCount,
     recentCount:recentCount,
@@ -1136,23 +1173,17 @@ function buildMonitoringSummary(){
 }
 function renderMonitoring(){
   var data=buildMonitoringSummary();
-  var clock=document.getElementById('monitor-clock');
-  if(clock){
-    clock.textContent='Hora actual: '+new Intl.DateTimeFormat('es-CL',{weekday:'long',day:'2-digit',month:'long',year:'numeric',hour:'2-digit',minute:'2-digit',second:'2-digit'}).format(data.now);
-  }
-  var dateEl=document.getElementById('monitor-date');
-  if(dateEl){
-    dateEl.textContent='Buses en operación y control GTFS · '+new Intl.DateTimeFormat('es-CL',{timeZone:'America/Santiago',weekday:'long',day:'numeric',month:'long'}).format(data.now);
-  }
+  updateMonitorClock();
   var status=document.getElementById('monitor-status');
   if(status){
-    status.innerHTML='<strong>'+busCountText(data.buses.length)+' visibles ahora</strong><span>'+esc((data.demandNow||0).toLocaleString('es-CL'))+' buses requeridos a esta hora · '+esc(data.coverageNow+'% de cobertura estimada')+' · '+esc(data.qualityScore+'% de cumplimiento GTFS')+'</span>';
+    status.innerHTML='<strong>'+busCountText(data.buses.length)+' visibles ahora</strong><span>'+esc((data.demandNow||0).toLocaleString('es-CL'))+' buses deberían estar ahora · '+esc(data.plannedDepartures.toLocaleString('es-CL'))+' buses planificados hoy · '+esc(data.qualityScore+'% de cumplimiento GTFS')+'</span>';
   }
   var stats=document.getElementById('monitor-stats');
   if(stats){
     stats.innerHTML=[
       ['Buses actuales', data.buses.length.toLocaleString('es-CL'), 'en circulación ahora'],
-      ['Requeridos hoy', data.plannedDepartures.toLocaleString('es-CL'), 'según GTFS del día'],
+      ['Buses que deberían estar', data.demandNow.toLocaleString('es-CL'), 'según GTFS a esta hora'],
+      ['Flota planificada hoy', data.plannedDepartures.toLocaleString('es-CL'), 'según GTFS del día'],
       ['Validación catálogo', data.routeValidationPct.toLocaleString('es-CL')+'%', 'coincidencia con recorrido'],
       ['Señal reciente', data.recentPct.toLocaleString('es-CL')+'%', 'últimos 20 minutos'],
       ['Cumplimiento GTFS', data.qualityScore.toLocaleString('es-CL')+'%', 'índice operativo general']
@@ -1170,8 +1201,10 @@ function renderMonitoring(){
   var demandCanvas=document.getElementById('monitor-demand-chart');
   if(demandCanvas){
     var labels=[];
-    for(var i=0;i<24;i++) labels.push(String(i).padStart(2,'0')+':00');
-    monitorDemandChart=drawMonitorDemandChart(demandCanvas, monitorDemandChart, labels, data.hourlyNeeded, data.buses.length);
+    for(var i=0;i<=24;i++) labels.push(String(i).padStart(2,'0')+':00');
+    var hourlyNeeded = data.hourlyNeeded.slice();
+    hourlyNeeded.push(hourlyNeeded.length ? hourlyNeeded[hourlyNeeded.length-1] : 0);
+    monitorDemandChart=drawMonitorDemandChart(demandCanvas, monitorDemandChart, labels, hourlyNeeded, data.buses.length);
   }
 
   var timeList=document.getElementById('monitor-time-list');
@@ -1199,20 +1232,12 @@ function startMonitorRefresh(){
   monitorRefreshTimer=setInterval(function(){
     if(document.hidden || CURRENT_MAP_MODE!=='monitor') return;
     renderMonitoring();
-  },1000);
-  monitorDataTimer=setInterval(function(){
-    if(document.hidden || CURRENT_MAP_MODE!=='monitor') return;
-    loadBusData(true);
   },60000);
 }
 function stopMonitorRefresh(){
   if(monitorRefreshTimer){
     clearInterval(monitorRefreshTimer);
     monitorRefreshTimer=null;
-  }
-  if(monitorDataTimer){
-    clearInterval(monitorDataTimer);
-    monitorDataTimer=null;
   }
 }
 
@@ -3192,9 +3217,13 @@ document.addEventListener('visibilitychange',function(){
   if(document.hidden){
     stopBusRefresh();
     stopMonitorRefresh();
+    stopMonitorClock();
   }else{
     if(CURRENT_MAP_MODE==='buses') startBusRefresh();
-    if(CURRENT_MAP_MODE==='monitor') startMonitorRefresh();
+    if(CURRENT_MAP_MODE==='monitor'){
+      startMonitorClock();
+      startMonitorRefresh();
+    }
   }
 });
 
@@ -3375,11 +3404,15 @@ function switchTab(tab){
   document.title=(meta[tab]?meta[tab][1]:'Mapa Operativo RED')+' — Mapa Operativo RED';
 
   if(tab!=='simulacion') stopSimAuto();
-  if(tab!=='monitor') stopMonitorRefresh();
+  if(tab!=='monitor'){
+    stopMonitorRefresh();
+    stopMonitorClock();
+  }
   setMapContext(tab);
 
   if(tab==='monitor'){
     renderMonitoring();
+    startMonitorClock();
     startMonitorRefresh();
   }
   document.body.classList.toggle('monitor-fullscreen',tab==='monitor');
