@@ -34,7 +34,8 @@ function freshData(){
     availableSources:{gtfs:false,deco:false,param:false}, decoCompatible:false, decoDateGapDays:null, analytics:null
   };
 }
-var freqChart = null, stopChart = null, overviewChart = null;
+var freqChart = null, stopChart = null, overviewChart = null, monitorTechChart = null, monitorTypeChart = null;
+var monitorRefreshTimer = null;
 var leafMap = null, layerIda = null, layerReg = null, layerStops = null, routeMapBounds = null;
 var BUS_ENDPOINTS = [
   'https://velocidades.seguimos.cl/?all-buses-data=1',
@@ -681,6 +682,7 @@ function tabAvailability(){
   var params=!!(DATA.availableSources && DATA.availableSources.param);
   return {
     resumen:gtfs,
+    monitor:APP_MODE==='realtime' && gtfs,
     buses:APP_MODE==='realtime' && !!(DATA.availableSources && DATA.availableSources.deco),
     ruta:gtfs,
     paradero:gtfs,
@@ -702,7 +704,7 @@ function configureAvailableTabs(){
     if(panel && !available[tab]) panel.style.display='none';
   });
   var preferred=APP_MODE==='realtime'
-    ? ['buses','ruta','resumen','paradero','simulacion','comparar','parametros']
+    ? ['resumen','monitor','buses','ruta','paradero','simulacion','comparar','parametros']
     : ['resumen','ruta','paradero','parametros','simulacion','comparar'];
   var first=preferred.find(function(tab){return available[tab];});
   if(first) switchTab(first);
@@ -841,6 +843,246 @@ function renderOverview(){
         }
       }
     });
+  }
+}
+
+
+function busRouteExistsByKey(routeKey){
+  var key=normalizeBusKey(routeKey);
+  if(!key) return false;
+  return Object.values(DATA.routes||{}).some(function(route){
+    return normalizeBusKey(route.route_short_name||route.route_id||'')===key || normalizeBusKey(route.route_id||'')===key;
+  });
+}
+function busValidationStatus(bus){
+  if(!bus) return 'sin-dato';
+  if(busRouteExistsByKey(bus.routeKey)) return 'validado';
+  return 'sin-catálogo';
+}
+function busTechBucket(vehicle){
+  var raw=normalizeBusKey(vehicle&&vehicle.tech||'');
+  if(!raw) return 'Sin dato';
+  if(raw.indexOf('VPE')!==-1) return 'VPE';
+  if(raw.indexOf('EURO VI')!==-1) return 'EURO VI';
+  if(raw.indexOf('EURO V')!==-1) return 'EURO V';
+  if(raw.indexOf('EURO III')!==-1) return 'EURO III';
+  return String(vehicle.tech||raw).trim();
+}
+function busTypeBucket(vehicle){
+  var raw=normalizeBusKey(vehicle&&vehicle.type||'');
+  if(!raw) return 'Sin dato';
+  if(/^(A1|A2|B1|B2|B2P|C2|D)$/.test(raw)) return raw;
+  return String(vehicle.type||raw).trim();
+}
+function currentDateKey(date){
+  var d=date instanceof Date ? date : new Date(date);
+  var y=d.getFullYear();
+  var m=String(d.getMonth()+1).padStart(2,'0');
+  var day=String(d.getDate()).padStart(2,'0');
+  return ''+y+m+day;
+}
+function todayServiceIds(date){
+  var d=date instanceof Date ? date : new Date(date);
+  if(isNaN(d.getTime())) return [];
+  var dayIndex=d.getDay();
+  var active=[];
+  Object.keys(DATA.calendar||{}).forEach(function(sid){
+    var c=DATA.calendar[sid]||{};
+    var start=String(c.start_date||c.START_DATE||'').replace(/\D/g,'');
+    var end=String(c.end_date||c.END_DATE||'').replace(/\D/g,'');
+    if(start && currentDateKey(d)<start) return;
+    if(end && currentDateKey(d)>end) return;
+    var flagNames=['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
+    var flag=flagNames[dayIndex];
+    if(!(String(c[flag])==='1' || c[flag]===1)) return;
+    active.push(sid);
+  });
+  (DATA.calendarDates||[]).forEach(function(row){
+    if(!row) return;
+    var sid=String(row.service_id||row.SERVICE_ID||row.serviceId||'').trim();
+    var dKey=String(row.date||row.DATE||row.service_date||'').replace(/\D/g,'');
+    var ex=String(row.exception_type||row.EXCEPTION_TYPE||'').trim();
+    if(!sid || dKey!==currentDateKey(d)) return;
+    if(ex==='1' && active.indexOf(sid)===-1) active.push(sid);
+    if(ex==='2') active=active.filter(function(x){return x!==sid;});
+  });
+  return active.sort(sortServices);
+}
+function routeDeparturesForServices(serviceIds){
+  var trips=[];
+  (serviceIds||[]).forEach(function(sid){
+    (DATA.tripsByService[sid]||[]).forEach(function(trip){ trips.push(trip); });
+  });
+  return trips;
+}
+function tripStartEndSafe(tripId){
+  var st=DATA.stopTimes[tripId]||[];
+  if(!st.length) return null;
+  return {
+    departure:timeToSecs(st[0].departure_time||st[0].arrival_time||'0:00:00'),
+    arrival:timeToSecs(st[st.length-1].arrival_time||st[st.length-1].departure_time||'0:00:00')
+  };
+}
+function arrayTopCounts(map){
+  return Object.keys(map).map(function(key){ return {label:key, value:map[key]}; }).sort(function(a,b){ return b.value-a.value || a.label.localeCompare(b.label, undefined, {numeric:true, sensitivity:'base'}); });
+}
+function doughnutColors(count){
+  var palette=['#8f2018','#c54f1d','#d98b17','#2e6f95','#4f6bed','#7c3aed','#2f855a','#6b7280','#9b2c2c','#0f766e'];
+  var out=[];
+  for(var i=0;i<count;i++) out.push(palette[i%palette.length]);
+  return out;
+}
+function drawMonitorDoughnut(canvas, chartRef, labels, values, title){
+  if(!canvas || !window.Chart) return chartRef;
+  if(chartRef) chartRef.destroy();
+  var colors=doughnutColors(labels.length);
+  return new Chart(canvas.getContext('2d'),{
+    type:'doughnut',
+    data:{labels:labels,datasets:[{label:title,data:values,backgroundColor:colors,borderColor:'#fff',borderWidth:2,hoverOffset:3}]},
+    options:{
+      responsive:true,
+      maintainAspectRatio:false,
+      cutout:'58%',
+      plugins:{legend:{position:'bottom',labels:{boxWidth:10,boxHeight:10,usePointStyle:true}},tooltip:{callbacks:{label:function(ctx){return ' '+ctx.label+': '+ctx.parsed+' buses';}}}}
+    }
+  });
+}
+function buildMonitoringSummary(){
+  var buses=BUS_STATE.features||[];
+  var vehicles=buses.map(function(bus){ return {bus:bus, info:vehicleInfoByPlate(bus.plate)||{}}; });
+  var techs={}, types={}, operators={}, statuses={};
+  var recentCount=0, recognizedCount=0, unknownPlateCount=0;
+  vehicles.forEach(function(item){
+    var bus=item.bus, info=item.info||{};
+    var tech=busTechBucket(info);
+    var type=busTypeBucket(info);
+    techs[tech]=(techs[tech]||0)+1;
+    types[type]=(types[type]||0)+1;
+    operators[bus.operatorName||'Operador no informado']=(operators[bus.operatorName||'Operador no informado']||0)+1;
+    var valid=busValidationStatus(bus);
+    statuses[valid]=(statuses[valid]||0)+1;
+    if(valid==='validado') recognizedCount++;
+    if(!bus.plate || bus.plate==='PATENTE NO INFORMADA') unknownPlateCount++;
+    if(bus.timestamp && (Date.now()-bus.timestamp.getTime())<=20*60*1000) recentCount++;
+  });
+
+  var now=new Date();
+  var serviceIds=todayServiceIds(now);
+  var trips=routeDeparturesForServices(serviceIds);
+  var plannedDepartures=trips.reduce(function(sum, trip){ return sum + estimatedTripInstances(trip); }, 0);
+  var routeCatalog=Object.keys(DATA.routes||{}).length;
+  var currentMinute=now.getHours()*60+now.getMinutes();
+  var matches=[];
+  trips.forEach(function(trip){
+    var route=DATA.routes[trip.route_id]||{};
+    var se=tripStartEndSafe(trip.trip_id);
+    if(!se) return;
+    var routeLabel=route.route_short_name||route.route_id||trip.route_id||'—';
+    var routeLong=route.route_long_name||'';
+    if(Math.floor(se.departure/60)===currentMinute){
+      matches.push({kind:'Inicio', time:secsToTime(se.departure), route:routeLabel, long:routeLong, service:serviceLabel(trip.service_id), dir:dirName(tripDir(trip))});
+    }
+    if(Math.floor(se.arrival/60)===currentMinute){
+      matches.push({kind:'Término', time:secsToTime(se.arrival), route:routeLabel, long:routeLong, service:serviceLabel(trip.service_id), dir:dirName(tripDir(trip))});
+    }
+  });
+  matches.sort(function(a,b){ return a.route.localeCompare(b.route, undefined, {numeric:true, sensitivity:'base'}) || a.kind.localeCompare(b.kind); });
+
+  var alerts=[];
+  var staleCount=vehicles.filter(function(item){ return item.bus.timestamp && (Date.now()-item.bus.timestamp.getTime())>20*60*1000; }).length;
+  var noCatalogCount=buses.length-recognizedCount;
+  var byOperator=arrayTopCounts(operators).slice(0,5);
+  if(!serviceIds.length) alerts.push({label:'Sin servicio activo para hoy', value:'Revisa la fecha del feed GTFS o la configuración del calendario.'});
+  alerts.push({label:'Buses con señal reciente', value:recentCount+'/'+buses.length+' en los últimos 20 minutos'});
+  alerts.push({label:'Buses sin recorrido reconocido', value:noCatalogCount+' unidades'});
+  alerts.push({label:'Buses sin patente informada', value:unknownPlateCount+' unidades'});
+  alerts.push({label:'Recorridos del catálogo', value:routeCatalog+' códigos cargados'});
+  if(byOperator.length){
+    alerts.push({label:'Operadores con más buses', value:byOperator.map(function(x){ return x.label+' · '+x.value; }).join(' · ')});
+  }
+
+  return {
+    buses:buses,
+    techs:arrayTopCounts(techs),
+    types:arrayTopCounts(types),
+    statuses:statuses,
+    recognizedCount:recognizedCount,
+    recentCount:recentCount,
+    staleCount:staleCount,
+    plannedDepartures:plannedDepartures,
+    serviceIds:serviceIds,
+    matches:matches,
+    alerts:alerts,
+    now:now,
+    currentMinute:currentMinute,
+    byOperator:byOperator,
+    routeCatalog:routeCatalog
+  };
+}
+function renderMonitoring(){
+  var data=buildMonitoringSummary();
+  var clock=document.getElementById('monitor-clock');
+  if(clock){
+    clock.textContent='Hora actual: '+new Intl.DateTimeFormat('es-CL',{hour:'2-digit',minute:'2-digit',second:'2-digit'}).format(data.now);
+  }
+  var status=document.getElementById('monitor-status');
+  if(status){
+    var serviceLabelNow=data.serviceIds.length ? data.serviceIds.map(serviceLabel).join(' · ') : 'Sin servicio activo';
+    status.innerHTML='<strong>'+busCountText(data.buses.length)+' en circulación</strong><span>'+esc(serviceLabelNow)+' · '+esc(data.recognizedCount+' validados en catálogo')+' · '+esc(data.plannedDepartures+' salidas programadas hoy')+'</span>';
+  }
+  var stats=document.getElementById('monitor-stats');
+  if(stats){
+    stats.innerHTML=[
+      ['Buses actuales', data.buses.length.toLocaleString('es-CL'), 'en circulación ahora'],
+      ['Reconocidos en recorrido', data.recognizedCount.toLocaleString('es-CL'), 'con catálogo vigente'],
+      ['Salidas programadas hoy', data.plannedDepartures.toLocaleString('es-CL'), data.serviceIds.length?'según calendario del día':'sin calendario activo'],
+      ['Señal reciente', data.recentCount.toLocaleString('es-CL'), 'últimos 20 minutos']
+    ].map(function(x){ return '<div class="stat-card"><div class="lbl">'+esc(x[0])+'</div><div class="val">'+esc(x[1])+'</div><div class="sub">'+esc(x[2])+'</div></div>'; }).join('');
+  }
+
+  var techCanvas=document.getElementById('monitor-tech-chart');
+  if(techCanvas){
+    monitorTechChart=drawMonitorDoughnut(techCanvas, monitorTechChart, data.techs.map(function(x){return x.label;}), data.techs.map(function(x){return x.value;}), 'Tecnología');
+  }
+  var typeCanvas=document.getElementById('monitor-type-chart');
+  if(typeCanvas){
+    monitorTypeChart=drawMonitorDoughnut(typeCanvas, monitorTypeChart, data.types.map(function(x){return x.label;}), data.types.map(function(x){return x.value;}), 'Tipo');
+  }
+
+  var timeList=document.getElementById('monitor-time-list');
+  if(timeList){
+    if(!data.matches.length){
+      timeList.innerHTML='<div class="monitor-empty">No hay recorridos que comiencen o terminen exactamente a esta hora.</div>';
+    }else{
+      timeList.innerHTML=data.matches.slice(0,12).map(function(item){
+        return '<div class="monitor-row"><strong>'+esc(item.kind)+' · '+esc(item.time)+'</strong><span>'+esc(item.route)+' · '+esc(item.long||'Sin nombre')+'</span><small>'+esc(item.service)+' · '+esc(item.dir)+'</small></div>';
+      }).join('');
+    }
+  }
+
+  var alertList=document.getElementById('monitor-alert-list');
+  if(alertList){
+    alertList.innerHTML=[
+      '<div class="monitor-row"><strong>Buses sin catálogo</strong><span>'+esc((data.buses.length-data.recognizedCount).toLocaleString('es-CL'))+' unidades no coinciden con un recorrido reconocido</span><small>Se consideran solo para control operativo.</small></div>',
+      '<div class="monitor-row"><strong>Buses con señal reciente</strong><span>'+esc(data.recentCount.toLocaleString('es-CL'))+' dentro de los últimos 20 minutos</span><small>Sirve para detectar caídas de transmisión.</small></div>',
+      '<div class="monitor-row"><strong>Ruta más cargada</strong><span>'+esc(data.byOperator[0] ? data.byOperator[0].label+' · '+data.byOperator[0].value+' buses' : 'Sin datos suficientes')+'</span><small>Primer corte de la operación en vivo.</small></div>'
+    ].concat(data.alerts.map(function(item){
+      return '<div class="monitor-row"><strong>'+esc(item.label)+'</strong><span>'+esc(item.value)+'</span><small>Monitoreo operativo</small></div>';
+    })).join('');
+  }
+}
+function startMonitorRefresh(){
+  stopMonitorRefresh();
+  if(CURRENT_MAP_MODE!=='monitor') return;
+  monitorRefreshTimer=setInterval(function(){
+    if(document.hidden || CURRENT_MAP_MODE!=='monitor') return;
+    renderMonitoring();
+  },30000);
+}
+function stopMonitorRefresh(){
+  if(monitorRefreshTimer){
+    clearInterval(monitorRefreshTimer);
+    monitorRefreshTimer=null;
   }
 }
 
@@ -2757,6 +2999,7 @@ async function applyBusFeatureLists(featureLists, sourceCount, sourceErrors){
   updateBusRouteOptions();
   if(CURRENT_MAP_MODE==='buses') renderBusLayer();
   if(CURRENT_MAP_MODE==='ruta') renderRouteBusOverlay();
+  if(CURRENT_MAP_MODE==='monitor') renderMonitoring();
 }
 async function loadBusData(force){
   if(BUS_STATE.loading) return;
@@ -2815,8 +3058,13 @@ function openBusView(){
   }
 }
 document.addEventListener('visibilitychange',function(){
-  if(document.hidden) stopBusRefresh();
-  else if(CURRENT_MAP_MODE==='buses') startBusRefresh();
+  if(document.hidden){
+    stopBusRefresh();
+    stopMonitorRefresh();
+  }else{
+    if(CURRENT_MAP_MODE==='buses') startBusRefresh();
+    if(CURRENT_MAP_MODE==='monitor') startMonitorRefresh();
+  }
 });
 
 
@@ -2863,6 +3111,8 @@ function toggleDetailsSheet(force){
     if(freqChart) freqChart.resize();
     if(stopChart) stopChart.resize();
     if(overviewChart) overviewChart.resize();
+    if(monitorTechChart) monitorTechChart.resize();
+    if(monitorTypeChart) monitorTypeChart.resize();
   },260);
 }
 function clearRouteLayers(){
@@ -2905,6 +3155,11 @@ function setMapContext(tab){
     initStopMap();
     if(!activeStop) fitSantiago(stopLeafMap);
     setTimeout(function(){stopLeafMap.invalidateSize();if(activeStop)renderStopMap(activeStop);},50);
+  }else if(tab==='monitor'){
+    target=routeMap;
+    if(target) target.classList.add('is-active');
+    if(!leafMap) initMap();
+    setTimeout(function(){if(leafMap) leafMap.invalidateSize();},50);
   }else if(tab==='simulacion'){
     target=simMapEl;
     if(target) target.classList.add('is-active');
@@ -2964,6 +3219,7 @@ function switchTab(tab){
   if(!available[tab]) return;
   var meta={
     resumen:['Cobertura metropolitana','Mapa de Santiago','Vista general'],
+    monitor:['Monitoreo en tiempo real','Buses y horarios','Monitoreo'],
     buses:['Ubicación actual','Buses en circulación','Buses'],
     ruta:['Recorrido y paradas','Trazado del recorrido','Trazado'],
     paradero:['Paraderos','Buscar paradero','Paraderos'],
@@ -2974,7 +3230,7 @@ function switchTab(tab){
   document.querySelectorAll('.tab-btn[data-tab]').forEach(function(button){
     button.classList.toggle('active',button.getAttribute('data-tab')===tab);
   });
-  ['resumen','buses','ruta','paradero','parametros','simulacion','comparar'].forEach(function(name){
+  ['resumen','monitor','buses','ruta','paradero','parametros','simulacion','comparar'].forEach(function(name){
     var panel=document.getElementById('tab-'+name);
     if(panel) panel.style.display=name===tab?'block':'none';
   });
@@ -2987,8 +3243,13 @@ function switchTab(tab){
   document.title=(meta[tab]?meta[tab][1]:'Mapa Operativo RED')+' — Mapa Operativo RED';
 
   if(tab!=='simulacion') stopSimAuto();
+  if(tab!=='monitor') stopMonitorRefresh();
   setMapContext(tab);
 
+  if(tab==='monitor'){
+    renderMonitoring();
+    startMonitorRefresh();
+  }
   if(tab==='resumen'){
     renderOverview();
     if(overviewChart) setTimeout(function(){overviewChart.resize();},80);
